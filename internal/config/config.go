@@ -243,12 +243,12 @@ type Monitor struct {
 
 type Expect struct {
 	// http: accepted status codes, e.g. [200, "2xx", "200-204"]. Default 2xx and 3xx.
-	Status          []string       `yaml:"status"`
-	BodyContains    string         `yaml:"body_contains"`
-	BodyNotContains string         `yaml:"body_not_contains"`
-	BodyRegex       string         `yaml:"body_regex"`
+	Status          []string          `yaml:"status"`
+	BodyContains    string            `yaml:"body_contains"`
+	BodyNotContains string            `yaml:"body_not_contains"`
+	BodyRegex       string            `yaml:"body_regex"`
 	Headers         map[string]string `yaml:"headers"`
-	JSON            []JSONExpect   `yaml:"json"`
+	JSON            []JSONExpect      `yaml:"json"`
 	// Checks slower than this are marked degraded instead of up.
 	MaxLatency Duration `yaml:"max_latency"`
 	// tcp: the server's first bytes must contain this string
