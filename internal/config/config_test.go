@@ -255,15 +255,15 @@ func TestEmptyFile(t *testing.T) {
 
 func TestParseDuration(t *testing.T) {
 	cases := map[string]time.Duration{
-		"0":      0,
-		"30s":    30 * time.Second,
-		"1.5m":   90 * time.Second,
-		"2h30m":  150 * time.Minute,
-		"7d":     7 * 24 * time.Hour,
-		"1w2d":   9 * 24 * time.Hour,
-		"1d12h":  36 * time.Hour,
-		"250ms":  250 * time.Millisecond,
-		" 5m ":   5 * time.Minute,
+		"0":     0,
+		"30s":   30 * time.Second,
+		"1.5m":  90 * time.Second,
+		"2h30m": 150 * time.Minute,
+		"7d":    7 * 24 * time.Hour,
+		"1w2d":  9 * 24 * time.Hour,
+		"1d12h": 36 * time.Hour,
+		"250ms": 250 * time.Millisecond,
+		" 5m ":  5 * time.Minute,
 	}
 	for in, want := range cases {
 		got, err := ParseDuration(in)

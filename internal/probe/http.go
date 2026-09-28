@@ -76,11 +76,11 @@ func newHTTP(m config.Monitor) (*httpProber, error) {
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			return dialer.DialContext(ctx, netw, addr)
 		},
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: m.InsecureSkipVerify}, //nolint:gosec // opt-in per monitor
-		DisableKeepAlives:     true, // every check measures a fresh connection
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   m.Timeout.D(),
-		ResponseHeaderTimeout: m.Timeout.D(),
+		TLSClientConfig:        &tls.Config{InsecureSkipVerify: m.InsecureSkipVerify}, //nolint:gosec // opt-in per monitor
+		DisableKeepAlives:      true,                                                  // every check measures a fresh connection
+		ForceAttemptHTTP2:      true,
+		TLSHandshakeTimeout:    m.Timeout.D(),
+		ResponseHeaderTimeout:  m.Timeout.D(),
 		MaxResponseHeaderBytes: 1 << 20,
 	}
 	follow := m.FollowRedirects == nil || *m.FollowRedirects

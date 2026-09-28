@@ -29,9 +29,9 @@ func TestFallbacks(t *testing.T) {
 
 func TestDuration(t *testing.T) {
 	cases := []struct {
-		d    time.Duration
-		en   string
-		tw   string
+		d  time.Duration
+		en string
+		tw string
 	}{
 		{45 * time.Second, "45 seconds", "45 秒"},
 		{time.Minute, "1 minute", "1 分鐘"},

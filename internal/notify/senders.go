@@ -96,18 +96,18 @@ type webhook struct{ n config.Notifier }
 // WebhookPayload is the JSON body sent by the webhook notifier. Its shape is
 // part of Pharos's public API.
 type WebhookPayload struct {
-	Event           string             `json:"event"`
-	At              time.Time          `json:"at"`
-	Status          string             `json:"status"`
-	PreviousStatus  string             `json:"previous_status"`
-	Monitor         map[string]string  `json:"monitor"`
-	Title           string             `json:"title"`
-	Text            string             `json:"text"`
-	Message         string             `json:"message,omitempty"`
-	Incident        any                `json:"incident,omitempty"`
-	DurationSeconds float64            `json:"duration_seconds,omitempty"`
-	CertExpiry      *time.Time         `json:"cert_expiry,omitempty"`
-	URL             string             `json:"url,omitempty"`
+	Event           string            `json:"event"`
+	At              time.Time         `json:"at"`
+	Status          string            `json:"status"`
+	PreviousStatus  string            `json:"previous_status"`
+	Monitor         map[string]string `json:"monitor"`
+	Title           string            `json:"title"`
+	Text            string            `json:"text"`
+	Message         string            `json:"message,omitempty"`
+	Incident        any               `json:"incident,omitempty"`
+	DurationSeconds float64           `json:"duration_seconds,omitempty"`
+	CertExpiry      *time.Time        `json:"cert_expiry,omitempty"`
+	URL             string            `json:"url,omitempty"`
 }
 
 func (w *webhook) Send(ctx context.Context, m Message) error {
