@@ -1,0 +1,8 @@
+/pharos
+/dist/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+/coverage.out
+/site/
