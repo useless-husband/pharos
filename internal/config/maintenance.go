@@ -172,3 +172,7 @@ func addClock(midnight time.Time, d time.Duration) time.Time {
 	m := int((d % time.Hour) / time.Minute)
 	return time.Date(midnight.Year(), midnight.Month(), midnight.Day(), h, m, 0, 0, midnight.Location())
 }
+
+// CompileMaintenance validates a maintenance window that was built in code
+// rather than loaded from a file, and prepares it for ActiveAt and Next.
+func CompileMaintenance(m *Maintenance, loc *time.Location) error { return m.compile(loc) }
