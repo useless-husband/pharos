@@ -123,6 +123,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Metrics name every monitor, private ones included. Without a token
+	// they are served to this machine only, like the dashboard.
 	if tok := cfg.Server.Metrics.Token; tok != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(tok)) != 1 {
@@ -130,6 +132,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+	} else if !s.localRequest(r) {
+		http.Error(w, "metrics are served to local clients only; set server.metrics.token to scrape remotely", http.StatusForbidden)
+		return
 	}
 	now := s.now()
 	periods, err := s.store.Periods(r.Context(), now.AddDate(0, 0, -30), now)

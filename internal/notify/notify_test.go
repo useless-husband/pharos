@@ -422,3 +422,44 @@ func TestDispatcherTest(t *testing.T) {
 		t.Error("unknown notifier")
 	}
 }
+
+func TestDeliveriesStayInOrderPerNotifier(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	s := &orderSender{fail: map[string]int{"down": 2}, record: func(k string) { mu.Lock(); order = append(order, k); mu.Unlock() }}
+	d, _ := NewDispatcher(dispatcherConfig(), Options{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Backoff:   []time.Duration{20 * time.Millisecond, 20 * time.Millisecond, 20 * time.Millisecond},
+		NewSender: func(config.Notifier) (Sender, error) { return s, nil }})
+	down := downEvent()
+	up := downEvent()
+	up.Kind, up.Status = model.EventUp, model.StatusUp
+	d.Notify(down) // fails twice, retried
+	d.Notify(up)   // must wait for the down alert
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	d.Close(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "down" || order[1] != "up" {
+		t.Fatalf("delivered %v, want [down up]", order)
+	}
+}
+
+type orderSender struct {
+	mu     sync.Mutex
+	fail   map[string]int
+	record func(string)
+}
+
+func (o *orderSender) Send(_ context.Context, m Message) error {
+	o.mu.Lock()
+	k := string(m.Event.Kind)
+	if o.fail[k] > 0 {
+		o.fail[k]--
+		o.mu.Unlock()
+		return errors.New("temporary")
+	}
+	o.mu.Unlock()
+	o.record(k)
+	return nil
+}

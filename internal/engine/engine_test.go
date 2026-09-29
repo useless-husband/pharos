@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -599,5 +600,209 @@ func TestPushMonitorSurvivesRestart(t *testing.T) {
 	h.advance(24*time.Hour + 61*time.Minute)
 	if st := h.state("backup"); st.Status != model.StatusDown {
 		t.Fatalf("missed heartbeat after restart: %s", st.Status)
+	}
+}
+
+// Regression tests for the pre-release review.
+
+func pushMon(hb, grace time.Duration) config.Monitor {
+	return config.Monitor{ID: "backup", Name: "Nightly backup", Type: config.TypePush,
+		Heartbeat: config.Duration(hb), Grace: config.Duration(grace), Interval: config.Duration(30 * time.Second)}
+}
+
+func maintWindow(t *testing.T, from, to time.Duration) config.Maintenance {
+	t.Helper()
+	m := config.Maintenance{Name: "window", Start: start.Add(from).Format(time.RFC3339), End: start.Add(to).Format(time.RFC3339)}
+	if err := config.CompileMaintenance(&m, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestPushDeadlineInsideMaintenanceStillAlerts(t *testing.T) {
+	cfg := baseConfig(pushMon(time.Hour, 5*time.Minute))
+	cfg.Maintenance = []config.Maintenance{maintWindow(t, 60*time.Minute, 70*time.Minute)}
+	h := newHarness(t, cfg)
+	token := h.engine.PushToken(cfg.Monitors[0])
+	if _, err := h.engine.Push(token, true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	// The job dies. Its deadline (65m) falls inside maintenance (60-70m).
+	h.advance(66 * time.Minute)
+	if st := h.state("backup"); st.Status != model.StatusMaintenance {
+		t.Fatalf("inside the window: %s", st.Status)
+	}
+	h.advance(10 * time.Minute)
+	st := h.state("backup")
+	if st.Status != model.StatusDown || st.Incident == nil {
+		t.Fatalf("after the window a missed heartbeat must be down, got %s", st.Status)
+	}
+	if ev := h.notes.last(); ev.Kind != model.EventDown {
+		t.Errorf("no down alert: %+v", ev)
+	}
+}
+
+func TestPushHeartbeatInsideMaintenanceRestoresUp(t *testing.T) {
+	cfg := baseConfig(pushMon(24*time.Hour, time.Hour))
+	cfg.Maintenance = []config.Maintenance{maintWindow(t, 10*time.Minute, 40*time.Minute)}
+	h := newHarness(t, cfg)
+	h.advance(15 * time.Minute)
+	if _, err := h.engine.Push(h.engine.PushToken(cfg.Monitors[0]), true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(30 * time.Minute)
+	if st := h.state("backup"); st.Status != model.StatusUp {
+		t.Fatalf("a good heartbeat during maintenance should leave the monitor up afterwards, got %s", st.Status)
+	}
+}
+
+func TestPushResumeAfterMissedHeartbeat(t *testing.T) {
+	cfg := baseConfig(pushMon(time.Hour, 5*time.Minute))
+	h := newHarness(t, cfg)
+	h.advance(70 * time.Minute) // never reported: down
+	if st := h.state("backup"); st.Status != model.StatusDown {
+		t.Fatalf("setup: %s", st.Status)
+	}
+	_ = h.engine.SetPaused(context.Background(), "backup", true)
+	h.settle()
+	_ = h.engine.SetPaused(context.Background(), "backup", false)
+	h.settle()
+	h.advance(time.Minute)
+	// Still no heartbeat since the job was last seen: down again.
+	if st := h.state("backup"); st.Status != model.StatusDown {
+		t.Fatalf("resumed push monitor without heartbeats: %s", st.Status)
+	}
+}
+
+func TestPushReminders(t *testing.T) {
+	cfg := baseConfig(pushMon(time.Hour, 5*time.Minute))
+	cfg.Defaults.RemindEvery = config.Duration(30 * time.Minute)
+	h := newHarness(t, cfg)
+	h.advance(66*time.Minute + 95*time.Minute) // down at 65m, then 95 minutes
+	var reminders int
+	for _, k := range h.notes.kinds() {
+		if k == model.EventReminder {
+			reminders++
+		}
+	}
+	if reminders != 3 {
+		t.Errorf("reminders = %d, want 3", reminders)
+	}
+}
+
+func TestMaintenanceClosesIncidentAndSaysSo(t *testing.T) {
+	cfg := baseConfig(httpMon("db"))
+	cfg.Maintenance = []config.Maintenance{maintWindow(t, 30*time.Minute, 60*time.Minute)}
+	h := newHarness(t, cfg)
+	h.probers["db"].set(downc("refused"))
+	h.advance(31 * time.Minute)
+	ev := h.notes.last()
+	if ev.Kind != model.EventUp || ev.Status != model.StatusMaintenance || ev.Incident == nil || ev.Incident.Ongoing() {
+		t.Fatalf("closing an incident for maintenance must be announced: %+v", ev)
+	}
+}
+
+func TestFailedReloadChangesNothing(t *testing.T) {
+	h := newHarness(t, baseConfig(httpMon("a"), httpMon("b")))
+	h.advance(15 * time.Second)
+	next := baseConfig(httpMon("a"), httpMon("b"), httpMon("broken"))
+	next.Monitors[0].URL = "https://changed.example"
+	failing := h.engine.newProber
+	h.engine.newProber = func(m config.Monitor) (probe.Prober, error) {
+		if m.ID == "broken" {
+			return nil, errors.New("cannot build prober")
+		}
+		return failing(m)
+	}
+	if err := h.engine.Reload(next); err == nil {
+		t.Fatal("reload should fail")
+	}
+	if st := h.state("a"); st.Monitor.URL != "https://a.example" {
+		t.Errorf("a failed reload must not apply partially: %s", st.Monitor.URL)
+	}
+	calls := h.probers["a"].count()
+	h.advance(3 * time.Minute)
+	if h.probers["a"].count() <= calls {
+		t.Error("monitor a stopped being checked after a failed reload")
+	}
+	if h.engine.Config().Monitors[0].URL != "https://a.example" {
+		t.Error("configuration swapped despite the failure")
+	}
+}
+
+func TestReloadDoesNotBlockReaders(t *testing.T) {
+	h := newHarness(t, baseConfig(httpMon("slow")))
+	h.advance(15 * time.Second)
+	// A check that is in flight while the monitor is being reloaded.
+	block := make(chan struct{})
+	h.probers["slow"].set(up())
+	h.engine.newProber = func(config.Monitor) (probe.Prober, error) { return h.probers["slow"], nil }
+	hold := &blocking{release: block, started: make(chan struct{}, 1)}
+	h.engine.mu.Lock()
+	r := h.engine.runners["slow"]
+	h.engine.mu.Unlock()
+	r.mu.Lock()
+	r.prober = hold
+	r.mu.Unlock()
+	_ = h.engine.CheckNow("slow")
+	<-hold.started
+
+	next := baseConfig(httpMon("slow"))
+	next.Monitors[0].URL = "https://changed.example"
+	done := make(chan error, 1)
+	go func() { done <- h.engine.Reload(next) }()
+	// While Reload waits for the in-flight check, readers must not block.
+	got := make(chan struct{})
+	go func() { h.engine.Snapshot(); h.engine.Config(); close(got) }()
+	select {
+	case <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Snapshot/Config blocked behind Reload")
+	}
+	close(block)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Reload deadlocked")
+	}
+}
+
+type blocking struct {
+	release chan struct{}
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *blocking) Probe(ctx context.Context) model.Check {
+	b.once.Do(func() {})
+	if b.started != nil {
+		select {
+		case b.started <- struct{}{}:
+		default:
+		}
+	}
+	<-b.release
+	return up()
+}
+
+func TestTransitionsNeverOverlap(t *testing.T) {
+	h := newHarness(t, baseConfig(httpMon("web")))
+	h.advance(15 * time.Second)
+	ctx := context.Background()
+	now := h.clock.Now()
+	// A result dated before the current period (e.g. a check that started
+	// before a resume) must not create overlapping periods.
+	if _, err := h.store.ApplyTransition(ctx, store.Transition{MonitorID: "web", To: model.StatusDown, At: now.Add(-time.Hour), Cause: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := h.store.Periods(ctx, start.Add(-time.Hour), now.Add(time.Hour))
+	list := ps["web"]
+	for i := 1; i < len(list); i++ {
+		if list[i].Start.Before(list[i-1].Start) || (!list[i-1].End.IsZero() && list[i].Start.Before(list[i-1].End)) {
+			t.Fatalf("overlapping periods: %+v", list)
+		}
 	}
 }

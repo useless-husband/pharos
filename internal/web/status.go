@@ -49,17 +49,22 @@ func publicGroups(cfg *config.Config) []publicGroup {
 	return out
 }
 
-func isPublic(cfg *config.Config, id string) bool {
+// publicSet returns the ids shown on the status page. Build it once per
+// request: checking monitors one by one against the groups is quadratic.
+func publicSet(cfg *config.Config) map[string]bool {
+	set := map[string]bool{}
 	for _, g := range publicGroups(cfg) {
 		for _, m := range g.Monitors {
-			if m.ID == id {
-				return true
-			}
+			set[m.ID] = true
 		}
 	}
-	return false
+	return set
 }
 
+func isPublic(cfg *config.Config, id string) bool { return publicSet(cfg)[id] }
+
+// publicIDs lists the public monitors. Callers must treat an empty list as
+// "nothing is public": the store reads an empty filter as "everything".
 func publicIDs(cfg *config.Config) []string {
 	var ids []string
 	for _, g := range publicGroups(cfg) {
@@ -68,6 +73,18 @@ func publicIDs(cfg *config.Config) []string {
 		}
 	}
 	return ids
+}
+
+// publicMonitorIDs keeps only public ids from a list, e.g. the monitors a
+// maintenance window covers.
+func publicMonitorIDs(set map[string]bool, ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if set[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // overallStatus summarizes public monitor states.
@@ -166,14 +183,17 @@ func (s *Server) statusPageData(ctx context.Context, r *http.Request) (*statusDa
 	ids := publicIDs(cfg)
 
 	from := now.AddDate(0, 0, -sp.HistoryDays-1)
-	periods, err := s.store.Periods(ctx, from, now, ids...)
-	if err != nil {
-		return nil, err
-	}
-	incSince := now.AddDate(0, 0, -max(sp.HistoryDays, sp.IncidentDays))
-	incidents, err := s.store.Incidents(ctx, store.IncidentQuery{MonitorIDs: ids, Since: incSince})
-	if err != nil {
-		return nil, err
+	periods := map[string][]model.Period{}
+	var incidents []model.Incident
+	if len(ids) > 0 {
+		var err error
+		if periods, err = s.store.Periods(ctx, from, now, ids...); err != nil {
+			return nil, err
+		}
+		incSince := now.AddDate(0, 0, -max(sp.HistoryDays, sp.IncidentDays))
+		if incidents, err = s.store.Incidents(ctx, store.IncidentQuery{MonitorIDs: ids, Since: incSince}); err != nil {
+			return nil, err
+		}
 	}
 	byMon := map[string][]model.Incident{}
 	for _, inc := range incidents {
@@ -224,6 +244,7 @@ func (s *Server) statusPageData(ctx context.Context, r *http.Request) (*statusDa
 	}
 	d.IncidentDays = groupIncidents(recent, names, p.Lang, loc, now, sp.ShowCauses)
 
+	public := publicSet(cfg)
 	for _, w := range s.engine.Maintenance(7 * 24 * time.Hour) {
 		mv := maintView{Name: w.Name, Active: !now.Before(w.Start)}
 		if mv.Name == "" {
@@ -234,10 +255,8 @@ func (s *Server) statusPageData(ctx context.Context, r *http.Request) (*statusDa
 			mv.When = i18n.FormatTime(w.Start, loc) + " – " + i18n.FormatTime(w.End, loc)
 		}
 		var affected []string
-		for _, id := range w.Monitors {
-			if isPublic(cfg, id) {
-				affected = append(affected, names[id])
-			}
+		for _, id := range publicMonitorIDs(public, w.Monitors) {
+			affected = append(affected, names[id])
 		}
 		if len(w.Monitors) > 0 && len(affected) == 0 {
 			continue // only affects private monitors

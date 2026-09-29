@@ -33,8 +33,8 @@ type runner struct {
 	maint        *Window
 
 	// push monitors
-	lastPush   time.Time
-	pushMissed bool
+	lastPush   time.Time // last heartbeat received
+	lastPushOK bool      // whether it reported success
 }
 
 // run is the loop of an active (probing) monitor.
@@ -109,36 +109,86 @@ func (e *Engine) runPush(ctx context.Context, r *runner) {
 		case <-trig:
 			timer.Stop()
 		}
-		e.checkHeartbeat(ctx, r)
+		e.tickPush(ctx, r)
 	}
 }
 
-func (e *Engine) checkHeartbeat(ctx context.Context, r *runner) {
+// pushDeadline is when a push monitor is late. A monitor that has never
+// reported gets a full heartbeat window from start; after a restart, the
+// last heartbeat still counts, but the job always gets at least the grace
+// period after Pharos starts (its heartbeat may have been sent while Pharos
+// was down). Caller holds r.mu.
+func pushDeadline(r *runner) time.Time {
+	window := r.mon.Heartbeat.D() + r.mon.Grace.D()
+	if r.lastPush.IsZero() {
+		return r.started.Add(window)
+	}
+	d := r.lastPush.Add(window)
+	if floor := r.started.Add(r.mon.Grace.D()); d.Before(floor) {
+		d = floor
+	}
+	return d
+}
+
+// tickPush re-evaluates a push monitor on its own schedule: maintenance
+// starting and ending, a missed deadline, and reminders. Heartbeats
+// themselves arrive through Engine.Push.
+func (e *Engine) tickPush(ctx context.Context, r *runner) {
+	ctx = context.WithoutCancel(ctx)
+	cfg := e.Config()
 	now := e.clock.Now()
+	var events []model.Event
 	r.mu.Lock()
-	m := r.mon
-	last := r.lastPush
-	if last.IsZero() || last.Before(r.started) {
-		// No heartbeat since this runner started: give the job a full
-		// window from the start before calling it late.
-		last = r.started
-	}
-	deadline := last.Add(m.Heartbeat.D() + m.Grace.D())
-	missed := !r.paused && now.After(deadline) && !r.pushMissed
-	if missed {
-		r.pushMissed = true
-	}
-	r.mu.Unlock()
-	if !missed {
+	if r.paused {
+		r.mu.Unlock()
 		return
 	}
-	c := model.Check{
-		MonitorID: m.ID,
-		At:        deadline,
-		Status:    model.StatusDown,
-		Message:   fmt.Sprintf("no heartbeat received for %s (expected every %s)", config.FormatDuration(now.Sub(last).Round(time.Second)), m.Heartbeat),
+	m := r.mon
+	prev := r.tracker.status
+	if w := maintenanceAt(cfg, m.ID, now); w != nil {
+		if prev != model.StatusMaintenance {
+			events = append(events, e.enterMaintenance(ctx, r, w)...)
+		}
+		r.maint = w
+	} else {
+		if prev == model.StatusMaintenance {
+			e.exitMaintenance(ctx, r, now)
+		}
+		deadline := pushDeadline(r)
+		switch {
+		case now.After(deadline) && r.tracker.status != model.StatusDown:
+			since := r.lastPush
+			if since.IsZero() || since.Before(r.started) {
+				since = r.started
+			}
+			miss := model.Check{MonitorID: m.ID, At: later(deadline, r.tracker.since), Status: model.StatusDown,
+				Message: fmt.Sprintf("no heartbeat received for %s (expected every %s)", config.FormatDuration(now.Sub(since).Round(time.Minute)), m.Heartbeat)}
+			if err := e.store.InsertCheck(ctx, miss); err != nil {
+				e.log.Error("store check", "monitor", m.ID, "err", err)
+			}
+			r.lastCheck = &miss
+			events = append(events, e.observe(ctx, r, cfg, miss)...)
+		case !now.After(deadline) && r.tracker.status == model.StatusUnknown && r.lastPushOK:
+			// A good heartbeat arrived during maintenance or before a
+			// resume and is still within its deadline.
+			r.tracker.reset(model.StatusUp, now)
+			if _, err := e.persist(ctx, r, change{from: model.StatusUnknown, to: model.StatusUp, at: now}, ""); err != nil {
+				r.tracker.reset(model.StatusUnknown, now)
+			}
+		default:
+			if ev, ok := e.reminder(r, cfg, now); ok {
+				events = append(events, ev)
+			}
+		}
 	}
-	e.handle(ctx, r, e.Config(), c)
+	status := r.tracker.status
+	r.mu.Unlock()
+	if status != prev {
+		e.publishStatus(r, cfg, prev)
+	}
+	for _, ev := range events {
+		e.notifier.Notify(ev)
+	}
 }
 
 // Window is an active or upcoming maintenance window.

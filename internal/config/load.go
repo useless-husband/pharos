@@ -132,6 +132,10 @@ func Parse(data []byte, path string, lookup func(string) (string, bool)) (*Confi
 		sortProblems(cerr)
 		return nil, cerr
 	}
+	cfg.index = make(map[string]int, len(cfg.Monitors))
+	for i, m := range cfg.Monitors {
+		cfg.index[m.ID] = i
+	}
 	return cfg, nil
 }
 

@@ -89,7 +89,12 @@
     const dot = $("[data-live-dot]");
     let timer = null;
     const es = new EventSource("/admin/events");
-    const schedule = () => { clearTimeout(timer); timer = setTimeout(() => refresh(false), 800); };
+    // Throttle, not debounce: with many monitors, events never pause long
+    // enough for a debounce to fire. Refresh at most every 1.5 s.
+    const schedule = () => {
+      if (timer) return;
+      timer = setTimeout(() => { timer = null; refresh(false); }, 1500);
+    };
     es.addEventListener("open", () => dot && dot.classList.add("on"));
     es.addEventListener("error", () => dot && dot.classList.remove("on"));
     es.addEventListener("check", schedule);

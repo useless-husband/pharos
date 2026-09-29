@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"syscall"
@@ -89,6 +90,12 @@ func describe(err error, timeout time.Duration) string {
 	var hostnameErr x509.HostnameError
 	var recordErr tls.RecordHeaderError
 	var opErr *net.OpError
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		// url.Error embeds the request URL, which may carry credentials in
+		// its query string; describe only the underlying failure.
+		return describe(urlErr.Err, timeout)
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || isTimeout(err):
 		return fmt.Sprintf("timed out after %s", roundDur(timeout))

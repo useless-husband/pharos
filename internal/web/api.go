@@ -3,13 +3,11 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/useless-husband/pharos/internal/config"
 	"github.com/useless-husband/pharos/internal/engine"
 	"github.com/useless-husband/pharos/internal/model"
 	"github.com/useless-husband/pharos/internal/store"
@@ -89,10 +87,14 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := s.now()
 	ids := publicIDs(cfg)
-	periods, err := s.store.Periods(ctx, now.AddDate(0, 0, -90), now, ids...)
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "internal error")
-		return
+	public := publicSet(cfg)
+	periods := map[string][]model.Period{}
+	if len(ids) > 0 {
+		var err error
+		if periods, err = s.store.Periods(ctx, now.AddDate(0, 0, -90), now, ids...); err != nil {
+			s.jsonError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	states := map[string]engine.MonitorState{}
 	for _, st := range s.engine.Snapshot() {
@@ -118,10 +120,13 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	for _, m := range cfg.Monitors {
 		names[m.ID] = m.Name
 	}
-	incs, err := s.store.Incidents(ctx, store.IncidentQuery{MonitorIDs: ids, Since: now.AddDate(0, 0, -cfg.StatusPage.IncidentDays)})
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "internal error")
-		return
+	var incs []model.Incident
+	if len(ids) > 0 {
+		var err error
+		if incs, err = s.store.Incidents(ctx, store.IncidentQuery{MonitorIDs: ids, Since: now.AddDate(0, 0, -cfg.StatusPage.IncidentDays)}); err != nil {
+			s.jsonError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	apiIncs := []apiIncident{}
 	for _, inc := range incs {
@@ -129,13 +134,14 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	maint := []engine.Window{}
 	for _, mw := range s.engine.Maintenance(7 * 24 * time.Hour) {
-		public := len(mw.Monitors) == 0
-		for _, id := range mw.Monitors {
-			public = public || isPublic(cfg, id)
+		if len(mw.Monitors) > 0 {
+			// Never reveal the ids of private monitors a window covers.
+			mw.Monitors = publicMonitorIDs(public, mw.Monitors)
+			if len(mw.Monitors) == 0 {
+				continue
+			}
 		}
-		if public {
-			maint = append(maint, mw)
-		}
+		maint = append(maint, mw)
 	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -161,10 +167,13 @@ func (s *Server) handleAPIIncidents(w http.ResponseWriter, r *http.Request) {
 		days = cfg.StatusPage.IncidentDays
 	}
 	ids := publicIDs(cfg)
-	incs, err := s.store.Incidents(r.Context(), store.IncidentQuery{MonitorIDs: ids, Since: now.AddDate(0, 0, -days), Limit: 500})
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "internal error")
-		return
+	var incs []model.Incident
+	if len(ids) > 0 {
+		var err error
+		if incs, err = s.store.Incidents(r.Context(), store.IncidentQuery{MonitorIDs: ids, Since: now.AddDate(0, 0, -days), Limit: 500}); err != nil {
+			s.jsonError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	names := map[string]string{}
 	for _, m := range cfg.Monitors {
@@ -189,9 +198,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	if r.Method == http.MethodPost {
-		_ = r.ParseForm()
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+		if err := r.ParseForm(); err != nil {
+			s.jsonError(w, http.StatusBadRequest, "invalid form body")
+			return
+		}
 		q = r.Form
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<16))
 	}
 	ok := true
 	switch strings.ToLower(q.Get("status")) {
@@ -269,9 +281,9 @@ func timePtr(t time.Time) *time.Time {
 	return &u
 }
 
-func (s *Server) adminMonitor(st engine.MonitorState, cfg *config.Config, ps []model.Period, now time.Time) apiAdminMonitor {
+func (s *Server) adminMonitor(st engine.MonitorState, public map[string]bool, ps []model.Period, now time.Time) apiAdminMonitor {
 	m := st.Monitor
-	return apiAdminMonitor{ID: m.ID, Name: m.Name, Type: m.Type, Target: m.Target(), Public: isPublic(cfg, m.ID),
+	return apiAdminMonitor{ID: m.ID, Name: m.Name, Type: m.Type, Target: m.Target(), Public: public[m.ID],
 		Status: st.Status, Since: timePtr(st.Since), Incident: st.Incident, LastCheck: toAPICheck(st.LastCheck),
 		CertExpiry: timePtr(st.CertExpiry), NextCheck: timePtr(st.NextCheck), Maintenance: st.Maintenance, Uptime: apiUptimeFor(ps, now)}
 }
@@ -285,8 +297,9 @@ func (s *Server) handleAPIMonitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []apiAdminMonitor{}
+	public := publicSet(cfg)
 	for _, st := range s.engine.Snapshot() {
-		out = append(out, s.adminMonitor(st, cfg, periods[st.Monitor.ID], now))
+		out = append(out, s.adminMonitor(st, public, periods[st.Monitor.ID], now))
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"monitors": out})
 }
@@ -304,7 +317,7 @@ func (s *Server) handleAPIMonitor(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, s.adminMonitor(st, s.cfg(), periods[id], now))
+	s.writeJSON(w, http.StatusOK, s.adminMonitor(st, publicSet(s.cfg()), periods[id], now))
 }
 
 func (s *Server) handleAPIChecks(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,9 @@ import (
 // handle records a check and applies its consequences: maintenance
 // transitions, confirmed status changes, reminders and certificate warnings.
 func (e *Engine) handle(ctx context.Context, r *runner, cfg *config.Config, c model.Check) {
+	// Finish bookkeeping even if the runner is being stopped mid-check: a
+	// half-applied result would leave memory and the database disagreeing.
+	ctx = context.WithoutCancel(ctx)
 	var events []model.Event
 	r.mu.Lock()
 	m := r.mon
@@ -21,9 +24,6 @@ func (e *Engine) handle(ctx context.Context, r *runner, cfg *config.Config, c mo
 		e.log.Error("store check", "monitor", m.ID, "err", err)
 	}
 	r.lastCheck = &c
-	if m.Type == config.TypePush && c.Status != model.StatusDown {
-		r.pushMissed = false
-	}
 	if !c.CertExpiry.IsZero() {
 		r.certExpiry = c.CertExpiry
 	}
@@ -34,35 +34,14 @@ func (e *Engine) handle(ctx context.Context, r *runner, cfg *config.Config, c mo
 		// A heartbeat or in-flight check that raced with a pause.
 	case maint != nil:
 		if prev != model.StatusMaintenance {
-			at := later(maint.Start, r.tracker.since)
-			r.tracker.reset(model.StatusMaintenance, at)
-			e.persist(ctx, r, change{from: prev, to: model.StatusMaintenance, at: at}, "maintenance started")
+			events = append(events, e.enterMaintenance(ctx, r, maint)...)
 		}
 		r.maint = maint
 	default:
 		if prev == model.StatusMaintenance {
-			end := c.At
-			if r.maint != nil && r.maint.End.Before(end) {
-				end = r.maint.End
-			}
-			r.maint = nil
-			r.tracker.reset(model.StatusUnknown, end)
-			e.persist(ctx, r, change{from: prev, to: model.StatusUnknown, at: end}, "")
+			e.exitMaintenance(ctx, r, c.At)
 		}
-		th := cfg.ConfirmFor(m)
-		if m.Type == config.TypePush {
-			th = config.Confirm{Down: 1, Up: 1} // the grace period already confirmed it
-		}
-		if ch, ok := r.tracker.observe(c, th); ok {
-			closed := e.persist(ctx, r, ch, "recovered")
-			events = append(events, e.transitionEvents(r, ch, closed)...)
-		}
-		if ev, ok := e.reminder(r, cfg, c.At); ok {
-			events = append(events, ev)
-		}
-		if ev, ok := e.certWarning(ctx, r, cfg, c.At); ok {
-			events = append(events, ev)
-		}
+		events = append(events, e.observe(ctx, r, cfg, c)...)
 	}
 	status := r.tracker.status
 	r.mu.Unlock()
@@ -76,27 +55,84 @@ func (e *Engine) handle(ctx context.Context, r *runner, cfg *config.Config, c mo
 	}
 }
 
+// observe feeds a check to the tracker and turns a confirmed change into
+// events. If the change cannot be stored, the tracker is rolled back so the
+// next check tries again and memory never disagrees with the database.
+// Caller holds r.mu.
+func (e *Engine) observe(ctx context.Context, r *runner, cfg *config.Config, c model.Check) []model.Event {
+	var events []model.Event
+	th := cfg.ConfirmFor(r.mon)
+	if r.mon.Type == config.TypePush {
+		th = config.Confirm{Down: 1, Up: 1} // the grace period already confirmed it
+	}
+	saved := r.tracker
+	if ch, ok := r.tracker.observe(c, th); ok {
+		closed, err := e.persist(ctx, r, ch, "recovered")
+		if err != nil {
+			r.tracker = saved
+			return nil
+		}
+		events = append(events, e.transitionEvents(r, ch, closed)...)
+	}
+	if ev, ok := e.reminder(r, cfg, c.At); ok {
+		events = append(events, ev)
+	}
+	if ev, ok := e.certWarning(ctx, r, cfg, c.At); ok {
+		events = append(events, ev)
+	}
+	return events
+}
+
+// enterMaintenance moves a monitor into maintenance. An open incident is
+// closed, and whoever was alerted is told why. Caller holds r.mu.
+func (e *Engine) enterMaintenance(ctx context.Context, r *runner, w *Window) []model.Event {
+	prev := r.tracker.status
+	at := later(w.Start, r.tracker.since)
+	r.tracker.reset(model.StatusMaintenance, at)
+	r.maint = w
+	closed, _ := e.persist(ctx, r, change{from: prev, to: model.StatusMaintenance, at: at}, "maintenance started")
+	if closed == nil {
+		return nil
+	}
+	return []model.Event{{Kind: model.EventUp, At: at, Monitor: ref(r.mon), Status: model.StatusMaintenance, Previous: prev,
+		Message: w.Name, Incident: closed, Duration: closed.Duration(at)}}
+}
+
+// exitMaintenance ends maintenance at the window's end (or now, if the
+// window was shortened). The status is unknown until the next result.
+// Caller holds r.mu.
+func (e *Engine) exitMaintenance(ctx context.Context, r *runner, now time.Time) {
+	end := now
+	if r.maint != nil && r.maint.End.Before(end) {
+		end = r.maint.End
+	}
+	r.maint = nil
+	prev := r.tracker.status
+	r.tracker.reset(model.StatusUnknown, end)
+	_, _ = e.persist(ctx, r, change{from: prev, to: model.StatusUnknown, at: end}, "")
+}
+
 // persist writes a confirmed change and keeps the runner's incident in
 // sync. It returns the incident the change closed, if any. Caller holds r.mu.
-func (e *Engine) persist(ctx context.Context, r *runner, ch change, resolution string) *model.Incident {
+func (e *Engine) persist(ctx context.Context, r *runner, ch change, resolution string) (*model.Incident, error) {
 	inc, err := e.store.ApplyTransition(ctx, store.Transition{
 		MonitorID: r.mon.ID, To: ch.to, At: ch.at, Cause: ch.cause, Resolution: resolution,
 	})
 	if err != nil {
 		e.log.Error("store transition", "monitor", r.mon.ID, "to", ch.to, "err", err)
-		return nil
+		return nil, err
 	}
 	e.log.Info("status changed", "monitor", r.mon.ID, "from", ch.from, "to", ch.to, "at", ch.at.Format(time.RFC3339), "cause", ch.cause)
 	if inc == nil {
-		return nil
+		return nil, nil
 	}
 	if inc.Ongoing() {
 		r.incident = inc
 		r.lastReminder = inc.Started
-		return nil
+		return nil, nil
 	}
 	r.incident = nil
-	return inc
+	return inc, nil
 }
 
 func ref(m config.Monitor) model.MonitorRef {
@@ -128,6 +164,9 @@ func (e *Engine) reminder(r *runner, cfg *config.Config, now time.Time) (model.E
 	every := cfg.RemindEveryFor(r.mon)
 	if every <= 0 || r.tracker.status != model.StatusDown || r.incident == nil {
 		return model.Event{}, false
+	}
+	if r.lastReminder.IsZero() {
+		r.lastReminder = r.incident.Started
 	}
 	if now.Sub(r.lastReminder) < every {
 		return model.Event{}, false

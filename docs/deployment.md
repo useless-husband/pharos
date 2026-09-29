@@ -50,7 +50,7 @@ server:
   trust_proxy: true
 ```
 
-Only enable `trust_proxy` when every request reaches Pharos through the proxy; otherwise a client could claim any address in `X-Forwarded-For`.
+Only enable `trust_proxy` when every request reaches Pharos through exactly one proxy that you control. Pharos takes the client address from the right-most `X-Forwarded-For` entry, the one that proxy appends; anything a client puts in the header itself is ignored.
 
 **Caddy** (handles certificates automatically):
 
@@ -130,4 +130,4 @@ Replace the binary or image and restart. Database migrations run automatically a
 
 ## Monitoring Pharos itself
 
-Scrape `/metrics` with Prometheus, or point an external check at `/healthz`. A monitor cannot report that the machine running it went down, so watch Pharos from somewhere else, for example a free external uptime service checking `https://status.example.com/healthz`.
+Scrape `/metrics` with Prometheus (set `server.metrics.token` and send it as a bearer token; without a token only local clients are served), or point an external check at `/healthz`. A monitor cannot report that the machine running it went down, so watch Pharos from somewhere else, for example a free external uptime service checking `https://status.example.com/healthz`.

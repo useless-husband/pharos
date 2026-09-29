@@ -40,6 +40,12 @@ func Render(ev model.Event, lang string, loc *time.Location, baseURL string) Mes
 		msg.Title = t("notify.down.title", name)
 		msg.Body = t("notify.down.body", name, ev.Message, i18n.FormatTime(ev.At, loc))
 	case model.EventUp:
+		if ev.Status == model.StatusMaintenance {
+			msg.Severity = SeverityInfo
+			msg.Title = t("notify.maint.title", name)
+			msg.Body = t("notify.maint.body", name, ev.Message, i18n.Duration(lang, ev.Duration))
+			break
+		}
 		msg.Severity = SeverityGood
 		msg.Title = t("notify.up.title", name)
 		msg.Body = t("notify.up.body", name, i18n.Duration(lang, ev.Duration))

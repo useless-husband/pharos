@@ -165,7 +165,13 @@ func (a *app) reload() error {
 	if err := a.notify.Reload(cfg); err != nil {
 		return err
 	}
-	return a.engine.Reload(cfg)
+	if err := a.engine.Reload(cfg); err != nil {
+		// Keep notifications routed for the configuration that is running.
+		_ = a.notify.Reload(old)
+		a.log.Error("reload rejected", "err", err)
+		return err
+	}
+	return nil
 }
 
 func cmdRun(args []string) error {

@@ -12,7 +12,9 @@ Pharos sends a notification when a confirmed status change happens, never for a 
 | `cert` | A TLS certificate expires within `cert_expiry_warn`. At most once a day. | on |
 | `degraded` | Responses became slower than `expect.max_latency`, or went back to normal. | off |
 
-A notifier receives every event except `degraded` unless it lists `events`. Nothing is sent during maintenance windows or for paused monitors.
+A notifier receives every event except `degraded` unless it lists `events`. Nothing is sent during maintenance windows or for paused monitors. If a maintenance window begins while an incident is open, the incident is closed and an `up` event with `"status": "maintenance"` tells whoever was alerted why.
+
+Events for the same monitor and notifier are delivered in order: a recovery message never overtakes a down alert that is still being retried.
 
 ## Delivery and retries
 

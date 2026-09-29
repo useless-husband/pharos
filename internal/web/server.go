@@ -251,24 +251,33 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			if strings.HasPrefix(r.URL.Path, "/assets/") || r.URL.Path == "/healthz" || r.URL.Path == "/admin/events" {
 				level = slog.LevelDebug
 			}
-			s.log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path, "status", rec.code,
+			path := r.URL.Path
+			if strings.HasPrefix(path, "/api/v1/push/") {
+				path = "/api/v1/push/…" // the token is a secret
+			}
+			s.log.Log(r.Context(), level, "request", "method", r.Method, "path", path, "status", rec.code,
 				"duration_ms", time.Since(start).Milliseconds(), "ip", s.clientIP(r))
 		}()
 		next.ServeHTTP(rec, r)
 	})
 }
 
-// clientIP is the remote address, or the first X-Forwarded-For hop when
-// trust_proxy is enabled.
+// clientIP is the remote address. With trust_proxy it is the right-most
+// X-Forwarded-For entry: the one our own proxy appended. Entries further
+// left were supplied by the client and cannot be trusted.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg().Server.TrustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+			hops := strings.Split(xff[len(xff)-1], ",")
+			if ip := net.ParseIP(strings.TrimSpace(hops[len(hops)-1])); ip != nil {
 				return ip.String()
 			}
 		}
 	}
+	return remoteHost(r)
+}
+
+func remoteHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -393,7 +402,12 @@ func (s *Server) errorPage(w http.ResponseWriter, r *http.Request, status int, k
 
 // Run serves until ctx is cancelled, then shuts down gracefully.
 func Run(ctx context.Context, addr string, h http.Handler, log *slog.Logger) error {
+	// Requests derive from base, which is cancelled when shutdown starts,
+	// so long-lived event streams end instead of holding shutdown open.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
 	srv := &http.Server{
+		BaseContext:       func(net.Listener) context.Context { return base },
 		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -414,6 +428,7 @@ func Run(ctx context.Context, addr string, h http.Handler, log *slog.Logger) err
 		return err
 	case <-ctx.Done():
 	}
+	cancelBase()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {

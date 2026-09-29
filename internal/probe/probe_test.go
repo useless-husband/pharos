@@ -333,3 +333,15 @@ func closedAddr(t *testing.T) string {
 	ln.Close()
 	return addr
 }
+
+func TestFailureMessagesNeverContainTheURL(t *testing.T) {
+	loop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, r.URL.String(), http.StatusFound) // redirect forever
+	}))
+	defer loop.Close()
+	secret := strings.Repeat("sk_live_", 30)
+	c := run(t, httpMonitor(loop.URL+"/v1/health?api_key="+secret))
+	if c.Status != model.StatusDown || strings.Contains(c.Message, "sk_live_") || !strings.Contains(c.Message, "redirects") {
+		t.Errorf("message %q", c.Message)
+	}
+}
