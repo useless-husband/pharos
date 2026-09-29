@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -188,20 +187,26 @@ func cmdRun(args []string) error {
 	setUserAgent()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return serve(ctx, cfg, *cfgPath, log, engine.Options{}, notify.Options{})
+	return serve(ctx, cfg, *cfgPath, log, nil, engine.Options{}, notify.Options{})
 }
 
-// serve runs the engine and HTTP server until ctx ends.
-func serve(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Logger, eopts engine.Options, nopts notify.Options) error {
+// serve runs the engine and HTTP server until ctx ends. st may be an
+// already opened store (the demo's in-memory database); otherwise the
+// configured database is opened.
+func serve(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Logger, st *store.Store, eopts engine.Options, nopts notify.Options) error {
 	log.Info("starting pharos", "version", buildVersion(), "config", cfgPath, "database", cfg.Storage.Path, "monitors", len(cfg.Monitors))
-	st, err := store.Open(ctx, cfg.Storage.Path)
-	if err != nil {
-		return err
+	if st == nil {
+		var err error
+		st, err = store.Open(ctx, cfg.Storage.Path)
+		if err != nil {
+			return err
+		}
 	}
 	defer st.Close()
 	if err := st.FailStaleNotifications(ctx); err != nil {
 		return err
 	}
+	var err error
 	nopts.Log, nopts.Logger = st, log
 	disp, err := notify.NewDispatcher(cfg, nopts)
 	if err != nil {
@@ -284,9 +289,13 @@ func count(n int, noun string) string {
 
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	out := fs.String("o", "pharos.yaml", "file to write")
+	out := fs.String("o", "pharos.yaml", `file to write, or "-" for standard output`)
 	force := fs.Bool("force", false, "overwrite an existing file")
 	_ = fs.Parse(args)
+	if *out == "-" {
+		_, err := os.Stdout.Write(exampleConfig)
+		return err
+	}
 	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	if *force {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
@@ -395,12 +404,7 @@ func cmdExport(args []string) error {
 	var st *store.Store
 	var err error
 	if *useDemo {
-		dir, err := os.MkdirTemp("", "pharos-demo-")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(dir)
-		cfg, st, err = demoData(ctx, filepath.Join(dir, "demo.db"), *lang, ":0")
+		cfg, st, err = demoData(ctx, *lang, ":0")
 		if err != nil {
 			return err
 		}
@@ -434,13 +438,14 @@ func cmdExport(args []string) error {
 	return nil
 }
 
-// demoData creates a seeded demo database.
-func demoData(ctx context.Context, dbPath, lang, listen string) (*config.Config, *store.Store, error) {
-	cfg, err := demo.Config(dbPath, lang, listen)
+// demoData creates a seeded, in-memory demo database: nothing touches the
+// disk or the network.
+func demoData(ctx context.Context, lang, listen string) (*config.Config, *store.Store, error) {
+	cfg, err := demo.Config(":memory:", lang, listen)
 	if err != nil {
 		return nil, nil, err
 	}
-	st, err := store.Open(ctx, dbPath)
+	st, err := store.Open(ctx, ":memory:")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -457,20 +462,18 @@ func cmdDemo(args []string) error {
 	lang := fs.String("lang", "en", "language: en or zh-TW")
 	_ = fs.Parse(args)
 	log, _ := newLogger("text", "info")
-	dir, err := os.MkdirTemp("", "pharos-demo-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg, st, err := demoData(ctx, filepath.Join(dir, "demo.db"), *lang, *listen)
+	cfg, st, err := demoData(ctx, *lang, *listen)
 	if err != nil {
 		return err
 	}
-	st.Close() // serve reopens it
-	fmt.Fprintf(os.Stderr, "\nPharos demo with 90 days of simulated history.\n  Status page: http://%s/\n  Dashboard:   http://%s/admin\nPress Ctrl+C to stop; the demo data is deleted on exit.\n\n", *listen, *listen)
-	return serve(ctx, cfg, "", log, engine.Options{NewProber: demo.NewProber}, notify.Options{NewSender: demo.NewSender})
+	host := *listen
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	fmt.Fprintf(os.Stderr, "\nPharos demo with 90 days of simulated history (kept in memory, nothing is sent anywhere).\n  Status page: http://%s/\n  Dashboard:   http://%s/admin\nPress Ctrl+C to stop.\n\n", host, host)
+	return serve(ctx, cfg, "", log, st, engine.Options{NewProber: demo.NewProber}, notify.Options{NewSender: demo.NewSender})
 }
 
 func cmdHealthcheck(args []string) error {
