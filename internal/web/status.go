@@ -179,7 +179,7 @@ func (s *Server) statusPageData(ctx context.Context, r *http.Request) (*statusDa
 	sp := cfg.StatusPage
 	now := s.now()
 	loc := sp.Location()
-	p := s.basePage(r, sp.Title)
+	p := s.basePage(r, "") // the site title alone: no "Title · Title"
 	ids := publicIDs(cfg)
 
 	from := now.AddDate(0, 0, -sp.HistoryDays-1)
