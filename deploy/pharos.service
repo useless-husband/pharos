@@ -1,0 +1,42 @@
+# systemd unit for Pharos. Install:
+#   sudo useradd --system --home /var/lib/pharos --shell /usr/sbin/nologin pharos
+#   sudo install -m 0755 pharos /usr/local/bin/pharos
+#   sudo install -d -o pharos -g pharos /var/lib/pharos
+#   sudo install -m 0640 -o root -g pharos pharos.yaml /etc/pharos/pharos.yaml
+#   sudo cp pharos.service /etc/systemd/system/ && sudo systemctl enable --now pharos
+# Reload the configuration without a restart: sudo systemctl reload pharos
+[Unit]
+Description=Pharos uptime monitor
+Documentation=https://github.com/useless-husband/pharos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pharos
+Group=pharos
+ExecStart=/usr/local/bin/pharos run -c /etc/pharos/pharos.yaml --log-format json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/var/lib/pharos
+# Set storage.path to /var/lib/pharos/pharos.db in the configuration.
+StateDirectory=pharos
+# Unprivileged ICMP for ping monitors.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

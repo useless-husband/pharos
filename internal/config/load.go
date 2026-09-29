@@ -120,6 +120,12 @@ func Parse(data []byte, path string, lookup func(string) (string, bool)) (*Confi
 	}
 
 	recordLines(root.Content[0], cfg)
+	if cfg.Storage.Path == "" {
+		// Containers point the database at a volume without editing the file.
+		if v, ok := lookup("PHAROS_STORAGE_PATH"); ok && v != "" {
+			cfg.Storage.Path = v
+		}
+	}
 	applyDefaults(cfg, path)
 	validate(cfg, root.Content[0], cerr)
 	if len(cerr.Problems) > 0 {

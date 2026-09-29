@@ -1,0 +1,46 @@
+version: 2
+project_name: pharos
+
+builds:
+  - id: pharos
+    main: ./cmd/pharos
+    binary: pharos
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    goos: [linux, darwin, windows, freebsd]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      - { goos: darwin, goarch: arm }
+      - { goos: windows, goarch: arm }
+      - { goos: freebsd, goarch: arm }
+      - { goos: freebsd, goarch: arm64 }
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - { goos: windows, formats: [zip] }
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - src: cmd/pharos/example.yaml
+        dst: pharos.example.yaml
+      - src: deploy/pharos.service
+        dst: pharos.service
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude: ["^docs", "^test", "^style", "^ci", "^chore"]
+
+release:
+  footer: |
+    **Docker:** `docker pull ghcr.io/useless-husband/pharos:{{ .Version }}`
+    **Checksums:** verify downloads with `sha256sum -c checksums.txt`.

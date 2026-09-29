@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -146,7 +147,6 @@ type app struct {
 	store   *store.Store
 	engine  *engine.Engine
 	notify  *notify.Dispatcher
-	web     *web.Server
 	mu      sync.Mutex // serializes reloads
 }
 
@@ -475,10 +475,21 @@ func cmdDemo(args []string) error {
 
 func cmdHealthcheck(args []string) error {
 	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
-	url := fs.String("url", "http://127.0.0.1:8080/healthz", "health endpoint of the running instance")
+	target := fs.String("url", "", "health endpoint (default: derived from server.listen in the configuration)")
+	cfgPath := fs.String("config", defaultConfigPath(), "configuration file")
 	_ = fs.Parse(args)
+	if *target == "" {
+		*target = "http://127.0.0.1:8080/healthz"
+		if cfg, err := config.Load(*cfgPath); err == nil {
+			host, port, _ := net.SplitHostPort(cfg.Server.Listen)
+			if host == "" || host == "0.0.0.0" || host == "::" {
+				host = "127.0.0.1"
+			}
+			*target = "http://" + net.JoinHostPort(host, port) + "/healthz"
+		}
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(*url)
+	resp, err := client.Get(*target)
 	if err != nil {
 		return err
 	}
