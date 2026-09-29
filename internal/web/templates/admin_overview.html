@@ -31,10 +31,10 @@
         <tbody>
         {{range .Rows}}
           <tr {{if eq .Status.String "down"}}class="row-down"{{end}} data-text="{{lower .Name}} {{lower .ID}} {{lower .Target}} {{.Type}}">
-            <td><span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{.StatusText}}</span></td>
+            <td><span class="st st-{{.Status}}" title="{{.StatusText}}">{{template "status-icon" .Status}}<span class="st-label">{{.StatusText}}</span></span></td>
             <td class="name-cell">
               <a href="/admin/monitors/{{.ID}}">{{.Name}}</a>
-              <span class="sub">{{.Type}} · {{.Target}}{{if not .Public}} · {{$.T "overview.private"}}{{end}}</span>
+              <span class="sub target">{{.Type}} · {{.Target}}{{if not .Public}} · {{$.T "overview.private"}}{{end}}</span>
               {{if .Message}}<span class="sub mono">{{.Message}}</span>{{end}}
             </td>
             <td class="num">{{.Up24}}</td>
