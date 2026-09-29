@@ -359,6 +359,10 @@ pre.snippet { background: var(--surface-2); padding: 10px 12px; border-radius: 6
 
 @media (max-width: 640px) {
   body { font-size: 14px; }
+  /* Status icons keep their text for screen readers. */
+  #monitor-table .st-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #monitor-table .name-cell { max-width: 0; width: 100%; }
+  .sub.target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   h1 { font-size: 19px; }
   .site .wrap { gap: 8px 16px; padding-top: 8px; padding-bottom: 8px; }
   .filters input[type="search"] { width: 100%; }
@@ -387,3 +391,6 @@ pre.plain { margin: 0; white-space: pre-wrap; font: inherit; }
 .tnum { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .page-head > div:first-child { flex: 1; min-width: 0; }
 section > h2 { margin-bottom: 10px; }
+@media (max-width: 640px) {
+  .page-head > div:first-child { flex: 1 1 100%; }
+}
