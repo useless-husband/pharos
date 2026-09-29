@@ -98,8 +98,11 @@ type StatusPage struct {
 	// Days of daily history bars to show. Default 90.
 	HistoryDays int `yaml:"history_days"`
 	// Days of past incidents to list. Default 14.
-	IncidentDays int     `yaml:"incident_days"`
-	Groups       []Group `yaml:"groups"`
+	IncidentDays int `yaml:"incident_days"`
+	// ShowCauses publishes failure messages such as "connection refused"
+	// on the public page. Off by default: they can reveal internal names.
+	ShowCauses bool    `yaml:"show_causes"`
+	Groups     []Group `yaml:"groups"`
 	// Links shown in the page header, e.g. a support page.
 	Links []Link `yaml:"links"`
 

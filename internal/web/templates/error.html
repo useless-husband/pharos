@@ -1,0 +1,13 @@
+{{define "bodyclass"}}public{{end}}
+{{define "body"}}
+<main class="wrap">
+  <div class="login card">
+    <div class="card-body">
+      <span class="brand">{{template "logo"}}<span>{{.SiteTitle}}</span></span>
+      <h1>{{.Title}}</h1>
+      <p class="muted">{{.Message}}</p>
+      <p class="spaced"><a href="/">{{.T "error.back"}}</a></p>
+    </div>
+  </div>
+</main>
+{{end}}

@@ -1,0 +1,37 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+{{template "admin-header" .}}
+<main class="wrap" id="main">
+  <div class="page-head"><h1>{{.T "nav.settings"}}</h1></div>
+  {{if .Result}}<div class="notice {{if .ResultOK}}ok{{else}}bad{{end}}" role="status"><pre class="plain">{{.Result}}</pre></div>{{end}}
+
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.instance"}}</h2></div>
+    <div class="card-body">
+      <dl class="kv">{{range .Rows}}<dt>{{.K}}</dt><dd>{{.V}}</dd>{{end}}</dl>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.maintenance"}}</h2></div>
+    {{if .Windows}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>{{.T "col.window"}}</th><th>{{.T "col.scope"}}</th><th>{{.T "col.window_state"}}</th><th>{{.T "col.when"}}</th></tr></thead>
+        <tbody>{{range .Windows}}<tr><td>{{.Name}}</td><td>{{.Scope}}</td><td>{{.State}}</td><td class="tnum">{{.When}}</td></tr>{{end}}</tbody>
+      </table>
+    </div>
+    {{else}}<p class="empty-state">{{.T "maint.none"}}</p>{{end}}
+  </section>
+
+  {{if .CanReload}}
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.reload"}}</h2></div>
+    <div class="card-body">
+      <p class="muted">{{.T "settings.reload_help"}}</p>
+      <form method="post" action="/admin/reload" class="reload-form"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn" type="submit">{{.T "settings.reload"}}</button></form>
+    </div>
+  </section>
+  {{end}}
+</main>
+{{end}}

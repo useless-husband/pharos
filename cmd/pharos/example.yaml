@@ -1,0 +1,112 @@
+# Pharos configuration.
+# Full reference: https://github.com/useless-husband/pharos/blob/main/docs/configuration.md
+#
+# Durations accept s, m, h, d and w: 30s, 5m, 1h30m, 7d.
+# Any value can come from the environment: ${NAME} or ${NAME:-default}.
+# Check this file with: pharos validate -c pharos.yaml
+
+server:
+  listen: ":8080"
+  # Public URL of this instance, used in notification links.
+  # base_url: https://status.example.com
+  # Enable only behind a reverse proxy you control.
+  # trust_proxy: true
+  admin:
+    username: admin
+    # Without a hash, the dashboard only accepts connections from this machine.
+    # Create one with: pharos hash-password
+    # password_hash: "$2a$12$..."
+
+storage:
+  path: pharos.db      # relative to this file
+  retention: 30d       # individual check results; history is kept 400 days
+
+status_page:
+  title: Example Status
+  description: Current status of Example services.
+  language: en         # or zh-TW
+  timezone: UTC        # e.g. Asia/Taipei
+  # Monitors not listed in any group stay private (dashboard only).
+  groups:
+    - name: Website
+      monitors: [homepage, api]
+    - name: Infrastructure
+      monitors: [dns]
+
+defaults:
+  interval: 1m
+  timeout: 10s
+  retry_interval: 15s  # while a failure is being confirmed or a monitor is down
+  confirm:
+    down: 3            # consecutive failures before a monitor is down
+    up: 2              # consecutive successes before it recovers
+  notify: [team]       # notifiers used when a monitor does not set its own
+  # remind_every: 1h   # repeat the alert while an incident stays open
+
+notifiers:
+  - name: team
+    type: webhook      # webhook, slack, discord, telegram, ntfy or email
+    url: ${ALERT_WEBHOOK_URL:-https://example.com/hooks/pharos}
+    # secret: ${WEBHOOK_SECRET}   # signs the body: X-Pharos-Signature
+  # - name: chat
+  #   type: discord
+  #   url: ${DISCORD_WEBHOOK_URL}
+  # - name: phone
+  #   type: ntfy
+  #   url: https://ntfy.sh/your-private-topic
+  #   events: [down, up]
+  # - name: mail
+  #   type: email
+  #   from: Pharos <pharos@example.com>
+  #   to: [ops@example.com]
+  #   smtp: { host: smtp.example.com, port: 587, username: pharos, password: "${SMTP_PASSWORD}" }
+
+monitors:
+  - id: homepage
+    name: Homepage
+    type: http
+    url: https://example.com/
+    expect:
+      status: [200]
+      body_contains: Example Domain
+      max_latency: 2s   # slower responses are "degraded"
+
+  - id: api
+    name: API
+    type: http
+    url: https://api.example.com/health
+    expect:
+      json:
+        - { path: status, equals: ok }
+
+  - id: dns
+    name: DNS
+    type: dns
+    query: example.com
+    record: A
+
+  - id: database
+    name: Database
+    type: tcp
+    address: db.internal:5432
+
+  - id: certificate
+    name: TLS certificate
+    type: tls
+    address: example.com:443
+    expect:
+      min_days_valid: 7
+
+  - id: backup
+    name: Nightly backup
+    type: push          # the job calls its heartbeat URL (shown in the dashboard)
+    heartbeat: 24h
+    grace: 1h
+
+maintenance:
+  - name: Weekly database maintenance
+    monitors: [database]
+    days: [sun]
+    at: "03:00"
+    duration: 1h
+    timezone: UTC

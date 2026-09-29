@@ -1,0 +1,54 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+{{template "admin-header" .}}
+<main class="wrap" id="main">
+  <div class="page-head"><h1>{{.T "nav.notifications"}}</h1></div>
+  {{if .Result}}<div class="notice {{if .ResultOK}}ok{{else}}bad{{end}}" role="status"><span>{{.Result}}</span></div>{{end}}
+
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.notifiers"}}</h2></div>
+    {{if .Notifiers}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>{{.T "col.name"}}</th><th>{{.T "col.type"}}</th><th class="hide-sm">{{.T "col.events"}}</th><th class="num">{{.T "col.used_by"}}</th><th></th></tr></thead>
+        <tbody>
+        {{range .Notifiers}}
+          <tr>
+            <td class="name-cell"><strong>{{.Name}}</strong></td>
+            <td>{{.Type}}</td>
+            <td class="hide-sm">{{.Events}}</td>
+            <td class="num">{{$.T "notifiers.monitors" .Monitors}}</td>
+            <td class="num"><form method="post" action="/admin/notifiers/{{.Name}}/test" class="inline-form"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn" type="submit">{{$.T "notifiers.test"}}</button></form></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}<p class="empty-state">{{.T "notifiers.none"}}</p>{{end}}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.deliveries"}}</h2></div>
+    {{if .Log}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>{{.T "table.time"}}</th><th>{{.T "col.event"}}</th><th>{{.T "col.monitor"}}</th><th>{{.T "col.notifier"}}</th><th>{{.T "col.state"}}</th><th class="num hide-sm">{{.T "col.attempts"}}</th><th class="hide-sm">{{.T "col.error"}}</th></tr></thead>
+        <tbody>
+        {{range .Log}}
+          <tr>
+            <td class="tnum">{{.At}}</td>
+            <td>{{$.T (printf "event.%s" .Event)}}</td>
+            <td>{{.Monitor}}</td>
+            <td>{{.Notifier}}</td>
+            <td><span class="tag {{if eq .State "failed"}}bad{{else if eq .State "pending"}}warn{{else}}ok{{end}}">{{$.T (printf "state.%s" .State)}}</span></td>
+            <td class="num hide-sm">{{.Attempts}}</td>
+            <td class="msg hide-sm">{{.LastError}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}<p class="empty-state">{{.T "deliveries.empty"}}</p>{{end}}
+  </section>
+</main>
+{{end}}

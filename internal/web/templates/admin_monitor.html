@@ -1,0 +1,169 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+{{template "admin-header" .}}
+<main class="wrap" id="main" data-live-page>
+  <div class="crumbs"><a href="/admin">{{.T "nav.monitors"}}</a> /</div>
+  <div class="page-head" id="head" data-live>
+    <div>
+      <div class="title-row">
+        <h1>{{.M.Name}}</h1>
+        <span class="st st-{{.S.Status}}">{{template "status-icon" .S.Status}}{{.StatusText}}</span>
+        {{if .Since}}<span class="muted num">{{.T "monitor.since" .Since}}</span>{{end}}
+      </div>
+      <div class="meta">
+        <span>{{.M.Type}}</span>
+        <span class="mono">{{if eq .M.Type "http"}}<a href="{{.M.URL}}" rel="noopener noreferrer">{{.M.Target}}</a>{{else}}{{.M.Target}}{{end}}</span>
+        {{if .LastAgo}}<span title="{{.LastAt}}">{{.T "monitor.last" .LastAgo}}{{if .Next}} · {{.T "monitor.next" .Next}}{{end}}</span>{{end}}
+        <span>{{if .Public}}{{.T "monitor.public"}}{{else}}{{.T "monitor.private"}}{{end}}</span>
+      </div>
+    </div>
+    <div class="actions">
+      {{if ne .S.Status.String "paused"}}
+      <form method="post" action="/admin/monitors/{{.M.ID}}/check" class="inline-form" data-async><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn" type="submit" {{if eq .M.Type "push"}}disabled title="{{.T "action.check_push"}}"{{end}}>{{.T "action.check"}}</button></form>
+      <form method="post" action="/admin/monitors/{{.M.ID}}/pause" class="inline-form" data-async><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn" type="submit">{{.T "action.pause"}}</button></form>
+      {{else}}
+      <form method="post" action="/admin/monitors/{{.M.ID}}/resume" class="inline-form" data-async><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn primary" type="submit">{{.T "action.resume"}}</button></form>
+      {{end}}
+    </div>
+  </div>
+
+  <div id="alerts" data-live>
+    {{if .S.Incident}}
+    <div class="notice bad" role="status">
+      <strong>{{.T "monitor.down_since" (.Time .S.Incident.Started)}}</strong>
+      <span class="mono muted">{{.S.Incident.Cause}}</span>
+    </div>
+    {{else if .S.Maintenance}}
+    <div class="notice maint" role="status"><strong>{{.T "monitor.in_maint" .S.Maintenance.Name (.Time .S.Maintenance.End)}}</strong></div>
+    {{else if eq .S.Status.String "paused"}}
+    <div class="notice" role="status"><strong>{{.T "monitor.paused"}}</strong></div>
+    {{end}}
+  </div>
+
+  <div class="tiles" id="tiles" data-live>
+    {{range .Tiles}}
+    <div class="tile {{.Class}}"><div class="label">{{.Label}}</div><div class="value">{{.Value}}</div>{{if .Note}}<div class="note">{{.Note}}</div>{{end}}</div>
+    {{end}}
+  </div>
+
+  {{if .PushURL}}
+  <section class="card">
+    <div class="card-head"><h2>{{.T "section.push"}}</h2></div>
+    <div class="card-body">
+      <p class="muted">{{.T "push.help" .M.Heartbeat.String .M.Grace.String}}</p>
+      <div class="copy-row">
+        <code id="push-url">{{.PushURL}}</code>
+        <button class="btn" type="button" data-copy="#push-url" data-copied="{{.T "push.copied"}}">{{.T "push.copy"}}</button>
+      </div>
+      <pre class="snippet"># {{.T "push.example_cron"}}
+0 3 * * *  /usr/local/bin/backup.sh &amp;&amp; curl -fsS -m 10 --retry 3 {{.PushURL}}
+
+# {{.T "push.example_fail"}}
+curl -fsS "{{.PushURL}}?status=down&amp;msg=disk%20full"</pre>
+    </div>
+  </section>
+  {{end}}
+
+  {{if ne .M.Type "push"}}
+  <section class="card">
+    <div class="card-head">
+      <h2>{{.T "section.response"}}</h2>
+      <nav class="seg" aria-label="{{.T "range.label"}}">
+        {{range .Ranges}}<a href="?range={{.}}" {{if eq . $.Range}}aria-current="true"{{end}}>{{.}}</a>{{end}}
+      </nav>
+    </div>
+    <div class="card-body">
+      <div class="chart" data-chart="#chart-data" role="img" aria-label="{{.T "section.response"}} {{.Range}}">
+        <noscript><p class="muted">{{.T "chart.noscript"}}</p></noscript>
+      </div>
+      <script type="application/json" id="chart-data">{{json .Chart}}</script>
+      <div class="chart-legend">
+        <span><i class="key-line key-avg"></i>{{.T "chart.avg"}}</span>
+        <span><i class="key-line key-p95"></i>{{.T "chart.p95"}}</span>
+        <span><i class="key-line key-outage"></i>{{.T "chart.outage"}}</span>
+      </div>
+      <details class="data">
+        <summary>{{.T "chart.table"}}</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>{{.T "table.time"}}</th><th class="num">{{.T "table.avg"}}</th><th class="num">p95</th><th class="num">{{.T "table.max"}}</th><th class="num">{{.T "table.checks"}}</th></tr></thead>
+            <tbody data-chart-table>
+            {{range .ChartRows}}<tr><td class="tnum" data-ts="{{.T}}"></td><td class="num">{{if .OK}}{{printf "%.0f" .Avg}} ms{{else}}–{{end}}</td><td class="num">{{if .OK}}{{printf "%.0f" .P95}} ms{{else}}–{{end}}</td><td class="num">{{if .OK}}{{printf "%.0f" .Max}} ms{{else}}–{{end}}</td><td class="num">{{.OK}}/{{.N}}</td></tr>{{end}}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+  {{end}}
+
+  <div class="two-col">
+    <section class="card" id="last-check" data-live>
+      <div class="card-head"><h2>{{.T "section.last"}}</h2></div>
+      <div class="card-body">
+        {{with .S.LastCheck}}
+        <dl class="kv">
+          <dt>{{$.T "table.status"}}</dt><dd><span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{if eq .Status.String "up"}}{{$.T "check.ok"}}{{else if eq .Status.String "degraded"}}{{$.T "status.degraded"}}{{else}}{{$.T "check.failed"}}{{end}}</span></dd>
+          <dt>{{$.T "table.time"}}</dt><dd class="num">{{$.LastAt}} · {{$.LastAgo}}</dd>
+          {{if ne $.M.Type "push"}}<dt>{{$.T "table.latency"}}</dt><dd class="num">{{printf "%.0f" (msOf .Latency)}} ms</dd>{{end}}
+          {{if .Message}}<dt>{{$.T "table.message"}}</dt><dd class="mono">{{.Message}}</dd>{{end}}
+        </dl>
+        {{if $.Timing}}
+        {{$.Timing}}
+        <div class="legend">{{range $.Phases}}<span><i class="sw {{.Class}}"></i>{{.Label}} <b class="num">{{.Value}}</b></span>{{end}}</div>
+        {{end}}
+        {{else}}
+        <p class="muted">{{$.T "checks.none"}}</p>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>{{.T "section.config"}}</h2></div>
+      <div class="card-body">
+        <dl class="kv">
+          <dt>{{.T "cfg.id"}}</dt><dd class="mono">{{.M.ID}}</dd>
+          {{if ne .M.Type "push"}}
+          <dt>{{.T "cfg.interval"}}</dt><dd>{{.M.Interval}}</dd>
+          <dt>{{.T "cfg.timeout"}}</dt><dd>{{.M.Timeout}}</dd>
+          <dt>{{.T "cfg.retry"}}</dt><dd>{{.M.RetryInterval}}</dd>
+          <dt>{{.T "cfg.confirm"}}</dt><dd>{{.T "cfg.confirm_value" .Confirm.Down .Confirm.Up}}</dd>
+          {{else}}
+          <dt>{{.T "cfg.heartbeat"}}</dt><dd>{{.M.Heartbeat}} + {{.M.Grace}}</dd>
+          {{end}}
+          <dt>{{.T "cfg.notifiers"}}</dt><dd>{{range $i, $n := .Notifiers}}{{if $i}}, {{end}}{{$n}}{{else}}{{.T "cfg.none"}}{{end}}</dd>
+        </dl>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" id="checks" data-live>
+    <div class="card-head">
+      <h2>{{.T "section.checks"}}</h2>
+      <nav class="seg" aria-label="{{.T "checks.filter"}}">
+        <a href="?range={{.Range}}" {{if not .FailuresOnly}}aria-current="true"{{end}}>{{.T "checks.all"}}</a>
+        <a href="?range={{.Range}}&amp;failures=1" {{if .FailuresOnly}}aria-current="true"{{end}}>{{.T "checks.failures"}}</a>
+      </nav>
+    </div>
+    {{if .Checks}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>{{.T "table.time"}}</th><th>{{.T "table.status"}}</th><th class="num">{{.T "table.latency"}}</th><th>{{.T "table.message"}}</th></tr></thead>
+        <tbody>
+        {{range .Checks}}
+          <tr><td class="nowrap"><span title="{{.At}}">{{.Ago}}</span></td>
+            <td><span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{.StatusText}}</span>{{if .Maint}} <span class="tag">{{$.T "checks.maint"}}</span>{{end}}</td>
+            <td class="num">{{.Latency}}</td><td class="msg">{{.Message}}</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}<p class="empty-state">{{.T "checks.none"}}</p>{{end}}
+  </section>
+
+  <section>
+    <h2 class="section-title">{{.T "section.incidents"}}</h2>
+    {{if .IncidentDays}}<div class="incident-wrap">{{template "incident-list" .}}</div>{{else}}<p class="muted">{{.T "incidents.none_monitor"}}</p>{{end}}
+  </section>
+</main>
+{{end}}
