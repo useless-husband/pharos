@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/useless-husband/pharos/internal/clock"
@@ -54,8 +55,12 @@ type Engine struct {
 	hub       *Hub
 	readOnly  bool
 
-	mu      sync.RWMutex
-	cfg     *config.Config
+	// cfg is read lock-free: runners read it on every check, and must never
+	// wait on mu (Reload holds it while stopping runners).
+	cfg      atomic.Pointer[config.Config]
+	reloadMu sync.Mutex // serializes Reload
+
+	mu      sync.RWMutex // guards runners, order, ctx
 	runners map[string]*runner
 	order   []string // monitor ids in config order
 	ctx     context.Context
@@ -126,9 +131,9 @@ func (e *Engine) Start(ctx context.Context, cfg *config.Config) error {
 
 	e.mu.Lock()
 	e.ctx = ctx
-	e.cfg = cfg
 	e.aliveAt = aliveAt
 	e.mu.Unlock()
+	e.cfg.Store(cfg)
 
 	// Monitors that were removed from the configuration while Pharos was
 	// stopped: close their open history so they stop accruing time.
@@ -195,7 +200,7 @@ func (e *Engine) retire(ctx context.Context, id string, at time.Time) {
 	}
 }
 
-// newRunner builds a runner, restoring persisted state. Must hold e.mu.
+// newRunner builds a runner, restoring persisted state.
 func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.MonitorState, now time.Time) (*runner, error) {
 	r := &runner{mon: m, trigger: make(chan struct{}, 1), started: now}
 	if m.Type != config.TypePush {
@@ -225,6 +230,10 @@ func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.Moni
 	r.lastCheck = st.LastCheck
 	if r.lastCheck != nil {
 		r.certExpiry = r.lastCheck.CertExpiry
+		if m.Type == config.TypePush && r.lastCheck.Status != model.StatusDown {
+			// The last good heartbeat anchors the deadline across restarts.
+			r.lastPush, r.lastPushOK = r.lastCheck.At, true
+		}
 	}
 	if e.readOnly {
 		r.tracker.reset(st.Status, st.Since)
@@ -243,8 +252,8 @@ func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.Moni
 		// Keep an ongoing outage open across the restart.
 		r.tracker.reset(model.StatusDown, st.Since)
 	case m.Type == config.TypePush && st.Status.Available():
-		// A push monitor's state is defined by its heartbeat deadline,
-		// which restarts from now (see checkHeartbeat): keep it.
+		// A push monitor's state is defined by its heartbeat deadline
+		// (see pushDeadline), which covers the restart: keep it.
 		r.tracker.reset(st.Status, st.Since)
 	case st.Status == model.StatusUp || st.Status == model.StatusDegraded || st.Status == model.StatusMaintenance:
 		// Pharos itself was not watching between its last observation and
@@ -277,97 +286,126 @@ func (e *Engine) launch(r *runner) {
 
 // Reload applies a new configuration: added monitors start, removed ones
 // stop (their history is kept), and changed ones restart with their state.
+//
+// Everything that can fail is prepared first, so a failed reload changes
+// nothing. Runners are stopped without holding e.mu, so the dashboard keeps
+// answering while a slow check finishes.
 func (e *Engine) Reload(cfg *config.Config) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	ctx := e.ctx
+	e.reloadMu.Lock()
+	defer e.reloadMu.Unlock()
 	now := e.clock.Now()
+	e.mu.RLock()
+	ctx := e.ctx
+	current := make(map[string]*runner, len(e.runners))
+	for id, r := range e.runners {
+		current[id] = r
+	}
+	e.mu.RUnlock()
 	// A monitor may come back after being removed; restore its history.
 	states, err := e.store.LoadStates(ctx)
 	if err != nil {
 		return err
 	}
+
+	type swap struct {
+		r      *runner
+		mon    config.Monitor
+		prober probe.Prober
+	}
 	next := map[string]*runner{}
 	var order []string
-	var added, changed int
+	var fresh []*runner
+	var swaps []swap
 	for _, m := range cfg.Monitors {
 		order = append(order, m.ID)
-		old := e.runners[m.ID]
-		if old != nil && old.mon.Fingerprint() == m.Fingerprint() {
-			next[m.ID] = old
-			continue
+		old := current[m.ID]
+		var oldMon config.Monitor
+		if old != nil {
+			old.mu.Lock()
+			oldMon = old.mon
+			old.mu.Unlock()
 		}
-		if old == nil {
+		switch {
+		case old != nil && oldMon.Fingerprint() == m.Fingerprint():
+			next[m.ID] = old
+		case old == nil:
 			r, err := e.newRunner(ctx, m, states[m.ID], now)
 			if err != nil {
 				return err
 			}
 			next[m.ID] = r
-			added++
-			continue
-		}
-		var prober probe.Prober
-		if m.Type != config.TypePush {
-			p, err := e.newProber(m)
-			if err != nil {
-				return fmt.Errorf("monitor %s: %w", m.ID, err)
+			fresh = append(fresh, r)
+		default:
+			var p probe.Prober
+			if m.Type != config.TypePush {
+				if p, err = e.newProber(m); err != nil {
+					return fmt.Errorf("monitor %s: %w", m.ID, err)
+				}
 			}
-			prober = p
+			next[m.ID] = old
+			swaps = append(swaps, swap{old, m, p})
 		}
-		// Changed: stop the old goroutine and continue with the same state.
-		old.cancel()
-		<-old.done
-		old.mu.Lock()
-		old.mon, old.prober = m, prober
-		old.trigger = make(chan struct{}, 1)
-		old.mu.Unlock()
-		next[m.ID] = old
-		changed++
 	}
-	removed := 0
-	for id, r := range e.runners {
+	var removed []*runner
+	for id, r := range current {
 		if _, keep := next[id]; !keep {
-			r.cancel()
-			<-r.done
-			r.mu.Lock()
-			if r.incident != nil || r.tracker.status != model.StatusUnknown {
-				e.retire(ctx, id, now)
-			}
-			r.mu.Unlock()
-			removed++
+			removed = append(removed, r)
 		}
 	}
-	for _, id := range order {
-		r := next[id]
-		if r.done == nil || isClosed(r.done) {
-			e.launch(r)
-		}
+
+	// Stop what changes or goes away.
+	for _, sw := range swaps {
+		sw.r.cancel()
 	}
-	e.runners, e.order, e.cfg = next, order, cfg
-	e.log.Info("configuration reloaded", "added", added, "changed", changed, "removed", removed, "monitors", len(order))
+	for _, r := range removed {
+		r.cancel()
+	}
+	for _, sw := range swaps {
+		<-sw.r.done
+	}
+	for _, r := range removed {
+		<-r.done
+	}
+
+	// Apply.
+	for _, sw := range swaps {
+		sw.r.mu.Lock()
+		if sw.r.mon.Type != sw.mon.Type || sw.r.mon.Heartbeat != sw.mon.Heartbeat {
+			// A new kind of check starts its deadlines from now.
+			sw.r.started, sw.r.lastPush, sw.r.lastPushOK = now, time.Time{}, false
+		}
+		sw.r.mon, sw.r.prober = sw.mon, sw.prober
+		sw.r.trigger = make(chan struct{}, 1)
+		sw.r.mu.Unlock()
+	}
+	for _, r := range removed {
+		r.mu.Lock()
+		if r.incident != nil || r.tracker.status != model.StatusUnknown {
+			e.retire(ctx, r.mon.ID, now)
+		}
+		r.mu.Unlock()
+	}
+	e.cfg.Store(cfg)
+	e.mu.Lock()
+	e.runners, e.order = next, order
+	for _, sw := range swaps {
+		e.launch(sw.r)
+	}
+	for _, r := range fresh {
+		e.launch(r)
+	}
+	e.mu.Unlock()
+	e.log.Info("configuration reloaded", "added", len(fresh), "changed", len(swaps), "removed", len(removed), "monitors", len(order))
 	return nil
 }
 
-func isClosed(ch chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
-}
-
-// Config returns the active configuration.
-func (e *Engine) Config() *config.Config {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.cfg
-}
+// Config returns the active configuration. It never blocks.
+func (e *Engine) Config() *config.Config { return e.cfg.Load() }
 
 func (e *Engine) runner(id string) (*runner, *config.Config) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.runners[id], e.cfg
+	return e.runners[id], e.cfg.Load()
 }
 
 // CheckNow runs a check as soon as possible.
@@ -406,11 +444,11 @@ func (e *Engine) SetPaused(ctx context.Context, id string, paused bool) error {
 	prev := r.tracker.status
 	if paused {
 		r.tracker.reset(model.StatusPaused, now)
-		e.persist(ctx, r, change{from: prev, to: model.StatusPaused, at: now}, "paused")
+		_, _ = e.persist(ctx, r, change{from: prev, to: model.StatusPaused, at: now}, "paused")
 	} else {
 		r.tracker.reset(model.StatusUnknown, now)
-		r.started = now // push monitors get a full heartbeat window again
-		e.persist(ctx, r, change{from: prev, to: model.StatusUnknown, at: now}, "")
+		r.maint = nil
+		_, _ = e.persist(ctx, r, change{from: prev, to: model.StatusUnknown, at: now}, "")
 	}
 	r.mu.Unlock()
 	e.publishStatus(r, cfg, prev)
@@ -439,12 +477,16 @@ func (e *Engine) Push(token string, ok bool, msg string, latency time.Duration) 
 	var r *runner
 	for _, id := range e.order {
 		cand := e.runners[id]
-		if cand.mon.Type == config.TypePush && subtle.ConstantTimeCompare([]byte(e.PushToken(cand.mon)), []byte(token)) == 1 {
+		cand.mu.Lock()
+		m := cand.mon
+		cand.mu.Unlock()
+		if m.Type == config.TypePush && subtle.ConstantTimeCompare([]byte(e.PushToken(m)), []byte(token)) == 1 {
 			r = cand
 		}
 	}
-	cfg, engineCtx := e.cfg, e.ctx
+	engineCtx := e.ctx
 	e.mu.RUnlock()
+	cfg := e.cfg.Load()
 	if r == nil {
 		return "", ErrNotFound
 	}
@@ -457,14 +499,14 @@ func (e *Engine) Push(token string, ok bool, msg string, latency time.Duration) 
 		}
 	}
 	r.mu.Lock()
-	r.lastPush = now
-	paused := r.paused
+	r.lastPush, r.lastPushOK = now, ok
+	paused, id := r.paused, r.mon.ID
 	r.mu.Unlock()
 	if paused {
-		return r.mon.ID, nil
+		return id, nil
 	}
 	e.handle(engineCtx, r, cfg, c)
-	return r.mon.ID, nil
+	return id, nil
 }
 
 // jitter spreads first checks over up to 10s so a restart does not fire

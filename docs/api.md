@@ -72,7 +72,7 @@ SVG badges for READMEs; `window` is `24h`, `7d`, `30d` (default) or `90d`. Publi
 
 ### `GET /metrics`
 
-Prometheus text format. Protected by `server.metrics.token` when set (`Authorization: Bearer …`).
+Prometheus text format. With `server.metrics.token` set, requests need `Authorization: Bearer <token>`; without it, only local clients are served, because the labels name private monitors too.
 
 | Metric | Labels | Meaning |
 |---|---|---|

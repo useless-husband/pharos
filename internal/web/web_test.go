@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -156,6 +157,7 @@ type reqOpt func(*http.Request)
 
 func remote(addr string) reqOpt { return func(r *http.Request) { r.RemoteAddr = addr } }
 func header(k, v string) reqOpt { return func(r *http.Request) { r.Header.Set(k, v) } }
+func host(h string) reqOpt      { return func(r *http.Request) { r.Host = h } }
 func cookie(c *http.Cookie) reqOpt {
 	return func(r *http.Request) { r.AddCookie(c) }
 }
@@ -164,6 +166,7 @@ func (e *env) do(method, target string, body io.Reader, opts ...reqOpt) *httptes
 	e.t.Helper()
 	r := httptest.NewRequest(method, target, body)
 	r.RemoteAddr = "203.0.113.9:4321" // remote by default
+	r.Host = "localhost:8080"
 	if body != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
@@ -499,5 +502,128 @@ func TestExport(t *testing.T) {
 	}
 	if !strings.Contains(string(hist), `href="../index.html"`) || !strings.Contains(string(hist), `href="../assets/pharos.css`) {
 		t.Error("history pages should link back relatively")
+	}
+}
+
+// Regression tests for the pre-release review.
+
+func TestForwardedForCannotImpersonateLocal(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Server.TrustProxy = true })
+	// nginx appends the real client: "<spoofed>, <real>".
+	w := e.do("GET", "/admin", nil, remote("127.0.0.1:5555"), header("X-Forwarded-For", "127.0.0.1, 198.51.100.7"))
+	if w.Code != 403 {
+		t.Fatalf("spoofed X-Forwarded-For reached the dashboard: %d", w.Code)
+	}
+	// Even a genuinely local client behind the proxy is not "local".
+	w = e.do("GET", "/admin", nil, remote("127.0.0.1:5555"), header("X-Forwarded-For", "127.0.0.1"))
+	if w.Code != 403 {
+		t.Fatalf("proxied request treated as local: %d", w.Code)
+	}
+}
+
+func TestRateLimitUsesTheTrustedHop(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Server.TrustProxy = true; withPassword(c) })
+	bad := url.Values{"username": {"admin"}, "password": {"nope"}}.Encode()
+	var last int
+	for i := 0; i < 11; i++ {
+		spoof := fmt.Sprintf("10.0.0.%d, 198.51.100.7", i)
+		last = e.do("POST", "/admin/login", strings.NewReader(bad), remote("127.0.0.1:1"), header("X-Forwarded-For", spoof)).Code
+	}
+	if last != http.StatusTooManyRequests {
+		t.Errorf("rotating the client-supplied hop bypassed the limit: %d", last)
+	}
+}
+
+func TestDNSRebindingIsRejected(t *testing.T) {
+	e := newEnv(t, nil)
+	if w := e.do("GET", "/admin", nil, remote("127.0.0.1:5555"), host("evil.example:8080")); w.Code != 403 {
+		t.Errorf("loopback request for a foreign host name: %d, want 403", w.Code)
+	}
+	for _, h := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:8080", "pharos.localhost"} {
+		if w := e.do("GET", "/admin", nil, remote("127.0.0.1:5555"), host(h)); w.Code != 200 {
+			t.Errorf("Host %s: %d, want 200", h, w.Code)
+		}
+	}
+}
+
+func TestEmptyGroupsExposeNothing(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.StatusPage.Groups = []config.Group{{Name: "Coming soon"}} })
+	body := e.do("GET", "/", nil).Body.String()
+	for _, leak := range []string{"Public API", "Primary database", "Nightly backup", "Static files"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("status page with an empty group leaks %q", leak)
+		}
+	}
+	var v struct {
+		Incidents []any `json:"incidents"`
+	}
+	_ = json.Unmarshal(e.do("GET", "/api/v1/incidents?days=90", nil).Body.Bytes(), &v)
+	if len(v.Incidents) != 0 {
+		t.Errorf("incidents API leaks %d incidents", len(v.Incidents))
+	}
+}
+
+func TestMaintenanceDoesNotRevealPrivateMonitors(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Maintenance[1].Monitors = []string{"mail", "db"}
+		if err := config.CompileMaintenance(&c.Maintenance[1], time.UTC); err != nil {
+			t.Fatal(err)
+		}
+	})
+	body := e.do("GET", "/api/v1/status", nil).Body.String()
+	if strings.Contains(body, `"db"`) || !strings.Contains(body, `"mail"`) {
+		t.Errorf("maintenance monitors in the public API: %s", body)
+	}
+}
+
+func TestMetricsAreLocalWithoutToken(t *testing.T) {
+	e := newEnv(t, nil)
+	if w := e.do("GET", "/metrics", nil); w.Code != 403 {
+		t.Errorf("remote /metrics without a token: %d", w.Code)
+	}
+	if w := e.do("GET", "/metrics", nil, remote("127.0.0.1:9")); w.Code != 200 {
+		t.Errorf("local /metrics: %d", w.Code)
+	}
+}
+
+func TestPasswordChangeEndsSessions(t *testing.T) {
+	e := newEnv(t, withPassword)
+	c := e.login()
+	next := *e.cfg
+	h, _ := bcrypt.GenerateFromPassword([]byte("another password!"), bcrypt.MinCost)
+	next.Server.Admin.PasswordHash = string(h)
+	if err := e.engine.Reload(&next); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.do("GET", "/api/v1/admin/monitors", nil, cookie(c)); w.Code != 401 {
+		t.Errorf("session survived a password change: %d", w.Code)
+	}
+}
+
+func TestOriginBehindHostRewritingProxy(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Server.TrustProxy = true
+		c.Server.BaseURL = "https://status.example.com"
+		withPassword(c)
+	})
+	good := url.Values{"username": {"admin"}, "password": {password}}.Encode()
+	w := e.do("POST", "/admin/login", strings.NewReader(good), host("127.0.0.1:8080"),
+		header("Origin", "https://status.example.com"), header("X-Forwarded-For", "198.51.100.7"))
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("login through a proxy that rewrites Host: %d", w.Code)
+	}
+	w = e.do("POST", "/admin/login", strings.NewReader(good), host("127.0.0.1:8080"),
+		header("Origin", "https://evil.example"), header("X-Forwarded-For", "198.51.100.8"))
+	if w.Code == http.StatusSeeOther {
+		t.Error("cross-origin login accepted")
+	}
+}
+
+func TestPushBodyIsBounded(t *testing.T) {
+	e := newEnv(t, nil)
+	m, _ := e.cfg.MonitorByID("backup")
+	big := strings.NewReader("msg=" + strings.Repeat("a", 1<<20))
+	if w := e.do("POST", "/api/v1/push/"+e.engine.PushToken(m), big); w.Code != 400 {
+		t.Errorf("oversized push body: %d, want 400", w.Code)
 	}
 }

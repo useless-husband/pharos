@@ -49,6 +49,8 @@ type Config struct {
 
 	// Path is the file the configuration was loaded from.
 	Path string `yaml:"-"`
+
+	index map[string]int // monitor id -> position, built by Parse
 }
 
 type Server struct {
@@ -303,6 +305,12 @@ func (m Monitor) Fingerprint() string {
 
 // MonitorByID returns the monitor with the given id.
 func (c *Config) MonitorByID(id string) (Monitor, bool) {
+	if c.index != nil {
+		if i, ok := c.index[id]; ok {
+			return c.Monitors[i], true
+		}
+		return Monitor{}, false
+	}
 	for _, m := range c.Monitors {
 		if m.ID == id {
 			return m, true

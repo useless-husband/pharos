@@ -22,11 +22,11 @@ Contents: [server](#server) · [storage](#storage) · [status_page](#status_page
 |---|---|---|
 | `listen` | `:8080` | Address of the HTTP server. Use `127.0.0.1:8080` behind a reverse proxy. |
 | `base_url` | – | Public URL of this instance, e.g. `https://status.example.com`. Used for links in notifications and the push URLs shown in the dashboard. |
-| `trust_proxy` | `false` | Honor `X-Forwarded-For` and `X-Forwarded-Proto`. Enable only when every request comes through a reverse proxy you control. |
+| `trust_proxy` | `false` | Honor `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` from one reverse proxy you control. The client address is the **right-most** `X-Forwarded-For` entry, the one your proxy appended; entries to its left are client-supplied and ignored. |
 | `admin.username` | `admin` | Dashboard user. |
-| `admin.password_hash` | – | bcrypt hash from `pharos hash-password`. **Without it the dashboard only answers requests from this machine**, and a request that passed through a proxy is never treated as local. |
+| `admin.password_hash` | – | bcrypt hash from `pharos hash-password`. **Without it the dashboard only answers requests made directly from this machine to `localhost`**: requests that passed through a proxy, or that name another host (DNS rebinding), are refused. Changing the hash signs everyone out. |
 | `metrics.enabled` | `true` | Serve Prometheus metrics at `/metrics`. |
-| `metrics.token` | – | Require `Authorization: Bearer <token>` on `/metrics`. |
+| `metrics.token` | – | Require `Authorization: Bearer <token>` on `/metrics`. **Without a token, `/metrics` answers local clients only**, because metric labels name every monitor, private ones included. |
 
 ## storage
 
@@ -67,7 +67,14 @@ Every monitor inherits these unless it sets its own.
 
 ### How a status is decided
 
-A single failed check is noise; `confirm.down` failures in a row are an outage. The outage is **dated from the first failure of that streak**, not from the moment it was confirmed, so reported downtime is accurate. Recovery works the same way with `confirm.up`, counting any check that is not down. `up → degraded` needs `confirm.down` slow checks in a row, and `degraded → up` needs `confirm.up` normal ones. The first healthy result after start-up is accepted immediately.
+A single failed check is noise. With `confirm.down` = N and `confirm.up` = M:
+
+- **Down**: N failed checks with no successful check between them. Slow checks in between neither count nor reset the streak, so a service that alternates between failing and slow is still reported down. The outage is **dated from the first of those failures**, not from the moment it was confirmed, so reported downtime is accurate.
+- **Degraded**: N consecutive slow-or-failed checks from up, while there are not yet enough failures to call it down.
+- **Recovery**: M consecutive checks that did not fail. The new status is the latest result (up or degraded), dated from the first of those checks.
+- **Degraded → up**: M consecutive normal checks.
+
+The first healthy result after start-up is accepted immediately.
 
 Availability is **time-weighted**: the share of counted time a monitor was up or degraded. Maintenance, paused and unknown time is excluded from both sides of the ratio, so planned work and gaps in monitoring never lower the number. If Pharos itself was stopped, the time it could not observe is recorded as unknown.
 

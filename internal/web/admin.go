@@ -71,6 +71,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var rows []overviewRow
 	counts := map[model.Status]int{}
 	var all []model.Period
+	public := publicSet(cfg)
 	for _, st := range s.engine.Snapshot() {
 		m := st.Monitor
 		counts[st.Status]++
@@ -82,7 +83,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Up24:   availability(ps, now.Add(-24*time.Hour), now, now),
 			Up7:    availability(ps, now.AddDate(0, 0, -7), now, now),
 			Up30:   availability(ps, now.AddDate(0, 0, -30), now, now),
-			Public: isPublic(cfg, m.ID), Avg: "–", P95: "–",
+			Public: public[m.ID], Avg: "–", P95: "–",
 		}
 		if st.LastCheck != nil {
 			row.LastAgo = i18n.Ago(p.Lang, now.Sub(st.LastCheck.At))
@@ -198,12 +199,23 @@ func pickRange(key string) (string, time.Duration, time.Duration) {
 	return ranges[0].key, ranges[0].d, ranges[0].bucket
 }
 
+// alignLocal rounds t down to a multiple of bucket counted from local
+// midnight in loc.
+func alignLocal(t time.Time, bucket time.Duration, loc *time.Location) time.Time {
+	lt := t.In(loc)
+	midnight := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, loc)
+	if bucket >= 24*time.Hour {
+		return midnight
+	}
+	return midnight.Add(lt.Sub(midnight) / bucket * bucket)
+}
+
 func (s *Server) latencyChart(ctx context.Context, id string, rangeKey string, lang string, loc *time.Location) (chartData, []store.LatencyPoint, error) {
 	now := s.now()
 	_, span, bucket := pickRange(rangeKey)
-	from := now.Add(-span)
-	// Align buckets so the chart does not shift on every reload.
-	from = from.Truncate(bucket)
+	// Align buckets to local time (midnight for daily buckets) so day labels
+	// are right and the chart does not shift on every reload.
+	from := alignLocal(now.Add(-span), bucket, loc)
 	pts, err := s.store.LatencySeries(ctx, id, from, now, bucket)
 	if err != nil {
 		return chartData{}, nil, err

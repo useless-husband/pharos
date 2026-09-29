@@ -72,6 +72,12 @@ func TestTrackerTable(t *testing.T) {
 		{"degraded back to up needs Up confirmations", config.Confirm{Down: 2, Up: 3}, []model.Status{G, U, U, G, U, U, U}, []model.Status{G, U}},
 		{"degraded then down", config.Confirm{Down: 2, Up: 2}, []model.Status{G, D, D}, []model.Status{G, D}},
 		{"thresholds of one", config.Confirm{Down: 1, Up: 1}, []model.Status{U, D, U, G, U}, []model.Status{U, D, U, G, U}},
+		// Review finding: failing and slow checks alternating must not
+		// hide an outage. Slow checks neither count nor reset failures.
+		{"alternating failed and slow from up", config.Confirm{Down: 3, Up: 2}, []model.Status{U, D, G, D, G, D}, []model.Status{U, G, D}},
+		{"alternating failed and slow from degraded", config.Confirm{Down: 3, Up: 2}, []model.Status{G, D, G, D, G, D}, []model.Status{G, D}},
+		{"a healthy check resets failures", config.Confirm{Down: 3, Up: 2}, []model.Status{U, D, G, U, D, G, D}, []model.Status{U, G}},
+		{"slow then failing escalates", config.Confirm{Down: 3, Up: 2}, []model.Status{U, G, G, G, D, D, D}, []model.Status{U, G, D}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -109,6 +115,29 @@ func TestTrackerPendingAndReset(t *testing.T) {
 	}
 }
 
+func TestTrackerDatesOutageFromFirstFailureAcrossSlowChecks(t *testing.T) {
+	th := config.Confirm{Down: 3, Up: 2}
+	var tr tracker
+	got := feed(&tr, th, U, D, G, D, G, D)
+	down := got[len(got)-1]
+	if down.to != D || !down.at.Equal(t0.Add(time.Minute)) || down.cause != "check down" {
+		t.Fatalf("down change %+v, want dated at the first failure (minute 1)", down)
+	}
+}
+
+func TestTrackerPendingByStatus(t *testing.T) {
+	th := config.Confirm{Down: 3, Up: 2}
+	var tr tracker
+	feed(&tr, th, G, G, G, G)
+	if tr.status != G || tr.pending() {
+		t.Error("a steady degraded state is not pending: it should use the normal interval")
+	}
+	tr.observe(model.Check{Status: D, At: t0.Add(time.Hour)}, th)
+	if !tr.pending() {
+		t.Error("a failure while degraded is pending")
+	}
+}
+
 func TestTrackerNeverDatesBeforeCurrentStatus(t *testing.T) {
 	th := config.Confirm{Down: 2, Up: 1}
 	var tr tracker
@@ -117,7 +146,7 @@ func TestTrackerNeverDatesBeforeCurrentStatus(t *testing.T) {
 	// period that starts before the current one.
 	tr.observe(model.Check{Status: D, At: t0.Add(5 * time.Minute)}, th)
 	ch, ok := tr.observe(model.Check{Status: D, At: t0.Add(11 * time.Minute)}, th)
-	if !ok || !ch.at.Equal(t0.Add(11*time.Minute)) {
+	if !ok || !ch.at.Equal(t0.Add(10*time.Minute)) { // clamped to when "up" began
 		t.Errorf("change %+v %v", ch, ok)
 	}
 }

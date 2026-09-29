@@ -46,19 +46,21 @@ stateDiagram-v2
     [*] --> Unknown
     Unknown --> Up: first healthy check
     Unknown --> Down: confirm.down failures
-    Up --> Degraded: confirm.down slow checks
+    Up --> Degraded: confirm.down slow-or-failed checks in a row
     Degraded --> Up: confirm.up normal checks
-    Up --> Down: confirm.down failures
-    Degraded --> Down: confirm.down failures
-    Down --> Up: confirm.up non-down checks
-    Down --> Degraded: confirm.up non-down checks (latest is slow)
+    Up --> Down: confirm.down failures, no success between
+    Degraded --> Down: confirm.down failures, no success between
+    Down --> Up: confirm.up checks that did not fail
+    Down --> Degraded: same, when the latest is slow
     Up --> Maintenance: window starts
     Maintenance --> Unknown: window ends
     Up --> Paused: operator
     Paused --> Unknown: operator resumes
 ```
 
-A change is dated from the **first check of the confirming streak**. If checks at 10:00, 10:00:15 and 10:00:30 fail and confirm an outage, the outage began at 10:00, not 10:00:30. A streak that is interrupted by a disagreeing result is discarded, so a flapping service does not alert on every blip.
+Failures count toward an outage until a successful check resets them; slow checks neither count nor reset, so a service alternating between failing and slow is still reported down, while an isolated failure between successes is ignored. A change is dated from the **first check of the confirming streak**: if checks at 10:00, 10:00:15 and 10:00:30 fail, the outage began at 10:00, not 10:00:30. A transition can never be dated before the current status began, so status periods never overlap.
+
+Push monitors are re-evaluated on their own tick: entering and leaving maintenance, a passed deadline, and reminders do not depend on a heartbeat arriving.
 
 A confirmed change is written in one transaction: the open status period is closed, the next one opened, and an incident opened (entering *down*) or closed (leaving it). Then the change becomes events: `down`, `up`, `degraded`, published to the notifier and to the live hub.
 
@@ -103,9 +105,13 @@ Hourly aggregates are rolled up every five minutes from completed hours, so long
 - **No-password mode** only admits loopback clients, and never a request carrying proxy headers without `trust_proxy`: behind a local reverse proxy every request would otherwise look local.
 - **Private by default**: monitors outside status page groups, and raw failure messages, never reach public endpoints. The static export renders as an anonymous visitor for the same reason.
 
+## Reloading
+
+A reload prepares everything that can fail (probers, new runners) before touching the running configuration, so an invalid or failing reload changes nothing. Runners that change or go away are stopped without holding the engine's lock, and the active configuration is an atomic pointer that runners read without locking, so a slow check in flight never blocks the dashboard or deadlocks a reload.
+
 ## Notifications
 
-The dispatcher routes an event to the monitor's notifiers, filtered by each notifier's `events`. Each delivery runs in its own goroutine (at most eight send at once) with backoff of 5 s, 30 s, 2 min and 10 min. A 4xx response other than 408 or 429 is permanent and not retried. Every attempt is logged in the database. On shutdown the dispatcher waits up to ten seconds for in-flight deliveries; entries still pending at the next start are marked as interrupted.
+The dispatcher routes an event to the monitor's notifiers, filtered by each notifier's `events`. Deliveries for the same monitor and notifier are chained so they arrive in order; otherwise each runs in its own goroutine (at most eight send at once) with backoff of 5 s, 30 s, 2 min and 10 min. A 4xx response other than 408 or 429 is permanent and not retried. Every attempt is logged in the database. On shutdown the dispatcher waits up to ten seconds for in-flight deliveries; entries still pending at the next start are marked as interrupted.
 
 ## Testing
 

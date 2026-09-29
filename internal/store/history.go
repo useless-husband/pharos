@@ -121,8 +121,17 @@ func (s *Store) ApplyTransition(ctx context.Context, t Transition) (*model.Incid
 	var inc *model.Incident
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		at := ms(t.At)
-		// Never end a period before it started (clock skew, restarts).
-		if _, err := tx.ExecContext(ctx, `UPDATE periods SET ended = MAX(started, ?) WHERE monitor_id = ? AND ended IS NULL`, at, t.MonitorID); err != nil {
+		// A transition can never be dated before the open period began
+		// (clock skew, a check that started before a pause): clamp it, so
+		// periods never overlap.
+		var openStart sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT started FROM periods WHERE monitor_id = ? AND ended IS NULL`, t.MonitorID).Scan(&openStart); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if openStart.Valid && at < openStart.Int64 {
+			at = openStart.Int64
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE periods SET ended = ? WHERE monitor_id = ? AND ended IS NULL`, at, t.MonitorID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO periods(monitor_id, status, started) VALUES (?, ?, ?)`, t.MonitorID, int(t.To), at); err != nil {
@@ -139,7 +148,7 @@ func (s *Store) ApplyTransition(ctx context.Context, t Transition) (*model.Incid
 				return err
 			}
 			id, _ := res.LastInsertId()
-			inc = &model.Incident{ID: id, MonitorID: t.MonitorID, Started: t.At, Cause: t.Cause}
+			inc = &model.Incident{ID: id, MonitorID: t.MonitorID, Started: fromMS(at), Cause: t.Cause}
 		case t.To != model.StatusDown && open != nil:
 			end := max(at, ms(open.Started))
 			if _, err := tx.ExecContext(ctx, `UPDATE incidents SET ended = ?, resolution = ? WHERE id = ?`, end, t.Resolution, open.ID); err != nil {

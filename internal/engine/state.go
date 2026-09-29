@@ -25,8 +25,8 @@ type MonitorState struct {
 
 // Snapshot returns every monitor's state in configuration order.
 func (e *Engine) Snapshot() []MonitorState {
+	cfg := e.cfg.Load()
 	e.mu.RLock()
-	cfg := e.cfg
 	runners := make([]*runner, 0, len(e.order))
 	for _, id := range e.order {
 		runners = append(runners, e.runners[id])

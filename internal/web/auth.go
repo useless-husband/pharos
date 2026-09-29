@@ -29,10 +29,13 @@ type session struct {
 }
 
 // Sessions are stateless signed cookies: base64(user|expiry|nonce).base64(mac).
-// Rotating the database secret signs everyone out.
+// The MAC also covers the configured password hash, so changing or removing
+// the password signs everyone out. Rotating the database secret does too.
 func (s *Server) sign(payload string) string {
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(payload))
+	mac.Write([]byte{0})
+	mac.Write([]byte(s.cfg().Server.Admin.PasswordHash))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -85,14 +88,31 @@ func (s *Server) csrfToken(sess session) string {
 // authMode reports how the dashboard is protected.
 func (s *Server) passwordSet() bool { return s.cfg().Server.Admin.PasswordHash != "" }
 
-// localRequest reports whether the request comes straight from this machine.
-// A request that went through a proxy is never local, even if the proxy is.
+// localRequest reports whether the request comes straight from this
+// machine, addressed to this machine. It never relies on forwarded
+// headers: behind a local proxy every request would look local. Requiring
+// a local Host also defeats DNS rebinding, where a web page makes the
+// victim's browser talk to 127.0.0.1 under the attacker's host name.
 func (s *Server) localRequest(r *http.Request) bool {
-	if !s.cfg().Server.TrustProxy && (r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Forwarded") != "" || r.Header.Get("X-Real-Ip") != "") {
+	for _, h := range []string{"X-Forwarded-For", "Forwarded", "X-Real-Ip", "X-Forwarded-Host"} {
+		if r.Header.Get(h) != "" {
+			return false
+		}
+	}
+	ip := net.ParseIP(remoteHost(r))
+	if ip == nil || !ip.IsLoopback() {
 		return false
 	}
-	ip := net.ParseIP(s.clientIP(r))
-	return ip != nil && ip.IsLoopback()
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	hip := net.ParseIP(host)
+	return hip != nil && hip.IsLoopback()
 }
 
 // localSession is the implicit identity used when no password is set and
@@ -143,13 +163,33 @@ func (s *Server) admin(next http.HandlerFunc) http.Handler {
 }
 
 // sameOrigin rejects cross-site writes when the browser tells us the origin.
+// The origin may match the Host header, the proxy's X-Forwarded-Host (with
+// trust_proxy; many proxies rewrite Host) or the configured base_url.
 func (s *Server) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true // non-browser clients; the CSRF token still applies
 	}
 	u, err := url.Parse(origin)
-	return err == nil && u.Host == r.Host
+	if err != nil || u.Host == "" {
+		return false
+	}
+	allowed := []string{r.Host}
+	cfg := s.cfg().Server
+	if cfg.TrustProxy {
+		if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+			allowed = append(allowed, strings.TrimSpace(strings.Split(fh, ",")[0]))
+		}
+	}
+	if b, err := url.Parse(cfg.BaseURL); err == nil && b.Host != "" {
+		allowed = append(allowed, b.Host)
+	}
+	for _, h := range allowed {
+		if strings.EqualFold(u.Host, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
@@ -227,13 +267,18 @@ func safeNext(next string) string {
 	return "/admin"
 }
 
-// limiter allows n failed attempts per window per key.
+// limiter allows n attempts per window per key. Its memory is bounded:
+// under a spray of addresses it forgets expired entries, and if that is
+// not enough it starts over, which costs an attacker nothing they could
+// not already get by changing address.
 type limiter struct {
 	mu     sync.Mutex
 	n      int
 	window time.Duration
 	hits   map[string][]time.Time
 }
+
+const limiterMaxKeys = 10000
 
 func newLimiter(n int, window time.Duration) *limiter {
 	return &limiter{n: n, window: window, hits: map[string][]time.Time{}}
@@ -254,11 +299,14 @@ func (l *limiter) allow(key string, now time.Time) bool {
 		return false
 	}
 	l.hits[key] = append(kept, now)
-	if len(l.hits) > 10000 { // bound memory under a spray of addresses
+	if len(l.hits) > limiterMaxKeys {
 		for k, v := range l.hits {
 			if len(v) == 0 || !v[len(v)-1].After(cut) {
 				delete(l.hits, k)
 			}
+		}
+		if len(l.hits) > limiterMaxKeys/2 {
+			l.hits = map[string][]time.Time{key: l.hits[key]}
 		}
 	}
 	return true

@@ -36,8 +36,12 @@ type Dispatcher struct {
 	cfg     *config.Config
 	senders map[string]Sender
 
-	sem     chan struct{}
-	wg      sync.WaitGroup
+	sem chan struct{}
+	wg  sync.WaitGroup
+	// tails chains deliveries per monitor and notifier, so a DOWN that is
+	// being retried is never overtaken by the RECOVERED that follows it.
+	tails   map[string]chan struct{}
+	tailsMu sync.Mutex
 	ctx     context.Context
 	cancel  context.CancelFunc
 	closing bool
@@ -69,7 +73,7 @@ func NewDispatcher(cfg *config.Config, opts Options) (*Dispatcher, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{log: opts.Log, logger: opts.Logger, clock: opts.Clock, backoff: opts.Backoff,
-		newSender: opts.NewSender, sem: make(chan struct{}, 8), ctx: ctx, cancel: cancel}
+		newSender: opts.NewSender, sem: make(chan struct{}, 8), ctx: ctx, cancel: cancel, tails: map[string]chan struct{}{}}
 	if err := d.Reload(cfg); err != nil {
 		cancel()
 		return nil, err
@@ -139,9 +143,29 @@ func (d *Dispatcher) enqueue(ev model.Event, notifier string, s Sender) {
 	if ev.Incident != nil {
 		incidentID = ev.Incident.ID
 	}
+	key := ev.Monitor.ID + "\x00" + notifier
+	done := make(chan struct{})
+	d.tailsMu.Lock()
+	prev := d.tails[key]
+	d.tails[key] = done
+	d.tailsMu.Unlock()
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer func() {
+			close(done)
+			d.tailsMu.Lock()
+			if d.tails[key] == done {
+				delete(d.tails, key)
+			}
+			d.tailsMu.Unlock()
+		}()
+		if prev != nil {
+			select {
+			case <-prev:
+			case <-d.ctx.Done():
+			}
+		}
 		d.deliver(msg, notifier, s, incidentID)
 	}()
 }

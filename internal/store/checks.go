@@ -170,6 +170,9 @@ type LatencyPoint struct {
 	Max    time.Duration
 }
 
+// rollupLag is how long after an hour ends it is aggregated.
+const rollupLag = 15 * time.Minute
+
 // Rollup aggregates completed hours of raw checks into latency_hourly.
 // It is idempotent and resumes from where the last run stopped.
 func (s *Store) Rollup(ctx context.Context, now time.Time) error {
@@ -178,7 +181,9 @@ func (s *Store) Rollup(ctx context.Context, now time.Time) error {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	current := now.Truncate(time.Hour)
+	// Only roll up hours that ended a while ago: a check that started just
+	// before the hour may still be running when the hour ends.
+	current := now.Add(-rollupLag).Truncate(time.Hour)
 	if until == 0 {
 		var first sql.NullInt64
 		if err := s.w.QueryRowContext(ctx, `SELECT MIN(at) FROM checks`).Scan(&first); err != nil {
