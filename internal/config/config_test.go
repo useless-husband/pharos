@@ -367,13 +367,16 @@ func TestFingerprintChangesWithProbeSettings(t *testing.T) {
 }
 
 func TestStoragePathFromEnvironment(t *testing.T) {
+	// Absolute on every platform ("/data/p.db" is relative on Windows).
+	fromEnv := filepath.Join(t.TempDir(), "env.db")
+	explicit := filepath.Join(t.TempDir(), "explicit.db")
 	src := "monitors:\n  - {id: web, type: http, url: https://example.com}\n"
-	c, err := Parse([]byte(src), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": "/data/pharos.db"}))
-	if err != nil || c.Storage.Path != "/data/pharos.db" {
+	c, err := Parse([]byte(src), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": fromEnv}))
+	if err != nil || c.Storage.Path != fromEnv {
 		t.Fatalf("path %q, %v", c.Storage.Path, err)
 	}
-	c, _ = Parse([]byte(src+"storage: {path: /srv/p.db}\n"), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": "/data/pharos.db"}))
-	if c.Storage.Path != "/srv/p.db" {
-		t.Errorf("an explicit storage.path wins, got %q", c.Storage.Path)
+	c, err = Parse([]byte(src+"storage: {path: '"+explicit+"'}\n"), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": fromEnv}))
+	if err != nil || c.Storage.Path != explicit {
+		t.Errorf("an explicit storage.path wins, got %q, %v", c.Storage.Path, err)
 	}
 }
