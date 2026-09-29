@@ -1,0 +1,131 @@
+# Notifications
+
+Pharos sends a notification when a confirmed status change happens, never for a single failed check. Messages are written in the language set by `status_page.language` (English or Traditional Chinese) and link to the monitor in the dashboard when `server.base_url` is set.
+
+## Events
+
+| Event | When | Default |
+|---|---|---|
+| `down` | An outage is confirmed (`confirm.down` failures in a row). The message includes the cause and when it began. | on |
+| `up` | A down monitor recovers. The message includes how long it was down. | on |
+| `reminder` | Every `remind_every` while an outage continues. | on (when `remind_every` is set) |
+| `cert` | A TLS certificate expires within `cert_expiry_warn`. At most once a day. | on |
+| `degraded` | Responses became slower than `expect.max_latency`, or went back to normal. | off |
+
+A notifier receives every event except `degraded` unless it lists `events`. Nothing is sent during maintenance windows or for paused monitors.
+
+## Delivery and retries
+
+Deliveries run in the background and never slow down checks. A failed delivery is retried after 5 s, 30 s, 2 min and 10 min. HTTP 4xx responses (except 408 and 429) mean the request itself is wrong, such as a deleted webhook, so they are not retried. Every attempt appears in the dashboard's *Delivery log*. Errors never contain webhook URLs or bot tokens, which usually embed secrets.
+
+Test a notifier with `pharos notify-test -c pharos.yaml <name>` or the *Send test* button in the dashboard.
+
+## Channels
+
+### Webhook
+
+```yaml
+- name: automation
+  type: webhook
+  url: https://hooks.example.com/pharos
+  headers:
+    Authorization: Bearer ${HOOK_TOKEN}
+  secret: ${WEBHOOK_SECRET}
+```
+
+Pharos POSTs this JSON document. Its shape is part of Pharos's stable interface.
+
+```json
+{
+  "event": "down",
+  "at": "2026-09-29T06:30:00Z",
+  "status": "down",
+  "previous_status": "up",
+  "monitor": { "id": "api", "name": "Public API", "type": "http", "target": "https://api.example.com/health" },
+  "title": "DOWN: Public API",
+  "text": "Public API is down.\nCause: HTTP 503 Service Unavailable\nSince: 2026-09-29 14:30 CST\nTarget: https://api.example.com/health",
+  "message": "HTTP 503 Service Unavailable",
+  "incident": { "id": 7, "monitor_id": "api", "started_at": "2026-09-29T06:30:00Z", "cause": "HTTP 503 Service Unavailable" },
+  "url": "https://status.example.com/admin/monitors/api"
+}
+```
+
+`up` events add `duration_seconds` (the outage length) and a closed incident with `ended_at`; `cert` events add `cert_expiry`. The `X-Pharos-Event` header repeats the event name.
+
+With `secret` set, the request carries `X-Pharos-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw body. Verify it before trusting the payload:
+
+```go
+mac := hmac.New(sha256.New, []byte(secret))
+mac.Write(body)
+expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+if !hmac.Equal([]byte(expected), []byte(r.Header.Get("X-Pharos-Signature"))) {
+	http.Error(w, "bad signature", http.StatusUnauthorized)
+	return
+}
+```
+
+```python
+expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+if not hmac.compare_digest(expected, request.headers["X-Pharos-Signature"]):
+    abort(401)
+```
+
+### Slack
+
+Create an [incoming webhook](https://api.slack.com/messaging/webhooks) and use its URL.
+
+```yaml
+- name: team
+  type: slack
+  url: ${SLACK_WEBHOOK_URL}
+```
+
+### Discord
+
+Channel settings → Integrations → Webhooks → New Webhook → Copy URL. Messages are embeds colored by severity; mentions are disabled.
+
+```yaml
+- name: chat
+  type: discord
+  url: ${DISCORD_WEBHOOK_URL}
+```
+
+### Telegram
+
+Create a bot with [@BotFather](https://t.me/BotFather), add it to your chat, and find the chat id (for example by sending a message and opening `https://api.telegram.org/bot<token>/getUpdates`).
+
+```yaml
+- name: phone
+  type: telegram
+  token: ${TELEGRAM_BOT_TOKEN}
+  chat_id: "-1001234567890"
+```
+
+### ntfy
+
+Push notifications to phones and desktops through [ntfy](https://ntfy.sh), hosted or self-hosted. Outages are sent at the highest priority. Use a hard-to-guess topic name on public servers.
+
+```yaml
+- name: pager
+  type: ntfy
+  url: https://ntfy.sh/acme-alerts-7f3k2
+  token: ${NTFY_TOKEN}        # for protected topics
+  events: [down, up, reminder]
+```
+
+### Email
+
+```yaml
+- name: mail
+  type: email
+  from: Pharos <pharos@example.com>
+  to: [ops@example.com, "Alex <alex@example.com>"]
+  smtp:
+    host: smtp.example.com
+    port: 587                 # default: 587 for starttls, 465 for tls, 25 for none
+    username: pharos
+    password: ${SMTP_PASSWORD}
+    security: starttls        # starttls (default), tls, or none
+```
+
+With `starttls`, Pharos refuses to send if the server does not offer STARTTLS rather than silently falling back to plain text. Messages are UTF-8 plain text.
