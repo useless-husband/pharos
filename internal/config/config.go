@@ -79,7 +79,8 @@ type Metrics struct {
 }
 
 type Storage struct {
-	// Path of the SQLite database. Default "pharos.db" next to the config file.
+	// Path of the SQLite database. Default: $PHAROS_STORAGE_PATH if set,
+	// else "pharos.db" next to the config file.
 	Path string `yaml:"path"`
 	// Retention is how long individual check results are kept. Hourly
 	// aggregates and status history are kept for 400 days. Default 30d.

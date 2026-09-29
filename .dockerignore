@@ -1,0 +1,6 @@
+.git
+dist
+site
+pharos
+*.db
+*.db-*

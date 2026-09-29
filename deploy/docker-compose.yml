@@ -1,0 +1,18 @@
+# docker compose up -d   — then open http://localhost:8080
+services:
+  pharos:
+    image: ghcr.io/useless-husband/pharos:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./pharos.yaml:/etc/pharos/pharos.yaml:ro
+      - pharos-data:/data
+    environment:
+      # Referenced from pharos.yaml as ${DISCORD_WEBHOOK_URL}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+    # Needed only for ping monitors.
+    cap_add: [NET_RAW]
+
+volumes:
+  pharos-data:

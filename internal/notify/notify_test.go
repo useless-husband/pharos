@@ -92,12 +92,6 @@ func (c *captured) server(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func (c *captured) count() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.bodies)
-}
-
 func (c *captured) json(t *testing.T, i int) map[string]any {
 	t.Helper()
 	c.mu.Lock()

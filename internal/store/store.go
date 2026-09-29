@@ -45,7 +45,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 				return nil, fmt.Errorf("create database directory: %w", err)
 			}
 		}
-		dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?" + pragmas +
+		dsn := "file:" + uriPath(path) + "?" + pragmas +
 			"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 		w, err := sql.Open("sqlite", dsn)
 		if err != nil {
@@ -69,6 +69,16 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// uriPath turns a file path into the path part of an SQLite file: URI.
+// Windows drive paths become "/C:/dir/file.db".
+func uriPath(path string) string {
+	p := filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" {
+		p = "/" + p
+	}
+	return (&url.URL{Path: p}).EscapedPath()
 }
 
 // Close closes the database.

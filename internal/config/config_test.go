@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ monitors:
 	if c.Server.Listen != ":8080" || c.Server.Admin.Username != "admin" {
 		t.Errorf("server defaults: %+v", c.Server)
 	}
-	if c.Storage.Path != "/etc/pharos/pharos.db" {
+	if want := filepath.Join(filepath.Dir("/etc/pharos/pharos.yaml"), "pharos.db"); c.Storage.Path != want {
 		t.Errorf("storage path should resolve next to the config file, got %q", c.Storage.Path)
 	}
 	if c.Storage.Retention.D() != 30*24*time.Hour {
@@ -362,5 +363,17 @@ func TestFingerprintChangesWithProbeSettings(t *testing.T) {
 	b.URL = "https://b.example"
 	if a.Fingerprint() == b.Fingerprint() {
 		t.Error("changing the URL must change the fingerprint")
+	}
+}
+
+func TestStoragePathFromEnvironment(t *testing.T) {
+	src := "monitors:\n  - {id: web, type: http, url: https://example.com}\n"
+	c, err := Parse([]byte(src), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": "/data/pharos.db"}))
+	if err != nil || c.Storage.Path != "/data/pharos.db" {
+		t.Fatalf("path %q, %v", c.Storage.Path, err)
+	}
+	c, _ = Parse([]byte(src+"storage: {path: /srv/p.db}\n"), "/etc/pharos/pharos.yaml", env(map[string]string{"PHAROS_STORAGE_PATH": "/data/pharos.db"}))
+	if c.Storage.Path != "/srv/p.db" {
+		t.Errorf("an explicit storage.path wins, got %q", c.Storage.Path)
 	}
 }

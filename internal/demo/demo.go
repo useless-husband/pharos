@@ -18,25 +18,47 @@ import (
 	"github.com/useless-husband/pharos/internal/store"
 )
 
+// names localizes the demo's visible text.
+var names = map[string]map[string]string{
+	"en": {
+		"title": "Acme Cloud Status", "desc": "Live status of Acme Cloud services. This is a demonstration with simulated data.",
+		"g1": "Website and API", "g2": "Infrastructure", "support": "Support",
+		"website": "Website", "api": "Public API", "auth": "Sign-in", "cdn": "Static files (CDN)", "dns": "DNS",
+		"mail": "Email delivery", "db": "Primary database", "backup": "Nightly backup",
+		"m1": "Database upgrade", "m2": "Mail relay migration",
+	},
+	"zh-TW": {
+		"title": "Acme 雲端服務狀態", "desc": "Acme 雲端各項服務的即時狀態。本頁為示範，資料皆為模擬產生。",
+		"g1": "網站與 API", "g2": "基礎設施", "support": "客服中心",
+		"website": "官方網站", "api": "公開 API", "auth": "會員登入", "cdn": "靜態檔案（CDN）", "dns": "DNS",
+		"mail": "電子郵件寄送", "db": "主資料庫", "backup": "每日備份",
+		"m1": "資料庫升級", "m2": "郵件主機遷移",
+	},
+}
+
 // Config returns the demo configuration, storing data at dbPath.
 func Config(dbPath, lang, listen string) (*config.Config, error) {
+	n := names["en"]
+	if lang == "zh-TW" {
+		n = names["zh-TW"]
+	}
 	src := fmt.Sprintf(`
 server:
   listen: %q
 storage:
   path: %q
 status_page:
-  title: Acme Cloud Status
-  description: Live status of Acme Cloud services. This is a demonstration with simulated data.
+  title: %q
+  description: %q
   language: %s
   timezone: Asia/Taipei
   groups:
-    - name: Website and API
+    - name: %q
       monitors: [website, api, auth]
-    - name: Infrastructure
+    - name: %q
       monitors: [cdn, dns, mail]
   links:
-    - label: Support
+    - label: %q
       url: https://example.com/support
 defaults:
   interval: 30s
@@ -51,55 +73,58 @@ notifiers:
     events: [down, up, reminder]
 monitors:
   - id: website
-    name: Website
+    name: %q
     type: http
     url: https://www.example.com/
     expect: { max_latency: 1500ms }
   - id: api
-    name: Public API
+    name: %q
     type: http
     url: https://api.example.com/health
     expect:
       json: [{ path: status, equals: ok }]
       max_latency: 800ms
   - id: auth
-    name: Sign-in
+    name: %q
     type: http
     url: https://login.example.com/healthz
   - id: cdn
-    name: Static files (CDN)
+    name: %q
     type: http
     url: https://cdn.example.com/ping
   - id: dns
-    name: DNS
+    name: %q
     type: dns
     query: example.com
     record: A
   - id: mail
-    name: Email delivery
+    name: %q
     type: tcp
     address: smtp.example.com:587
     expect: { banner: "220" }
   - id: db
-    name: Primary database
+    name: %q
     type: tcp
     address: db.internal:5432
   - id: backup
-    name: Nightly backup
+    name: %q
     type: push
     heartbeat: 24h
     grace: 1h
 maintenance:
-  - name: Database upgrade
+  - name: %q
     monitors: [db]
     days: [sun]
     at: "03:00"
     duration: 1h
-  - name: Mail relay migration
+  - name: %q
     monitors: [mail]
     start: %q
     end: %q
-`, listen, dbPath, lang, time.Now().AddDate(0, 0, 2).Format("2006-01-02")+" 01:00", time.Now().AddDate(0, 0, 2).Format("2006-01-02")+" 02:30")
+`, listen, dbPath, n["title"], n["desc"], lang, n["g1"], n["g2"], n["support"],
+		n["website"], n["api"], n["auth"], n["cdn"], n["dns"], n["mail"], n["db"], n["backup"],
+		n["m1"], n["m2"],
+		time.Now().AddDate(0, 0, 2).Format("2006-01-02")+" 01:00", time.Now().AddDate(0, 0, 2).Format("2006-01-02")+" 02:30")
 	return config.Parse([]byte(src), "", func(string) (string, bool) { return "", false })
 }
 

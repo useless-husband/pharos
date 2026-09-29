@@ -127,6 +127,10 @@ func describe(err error, timeout time.Duration) string {
 		return describe(opErr.Err, timeout)
 	}
 	msg := err.Error()
+	// Windows words socket errors differently ("actively refused it").
+	if low := strings.ToLower(msg); strings.Contains(low, "actively refused") || strings.Contains(low, "connection refused") {
+		return "connection refused"
+	}
 	// Strip Go's verbose request prefix: `Get "https://x": ...`.
 	if i := strings.Index(msg, "\": "); i >= 0 && i < 200 {
 		msg = msg[i+3:]
