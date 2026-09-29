@@ -1,0 +1,53 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+{{template "admin-header" .}}
+<main class="wrap" id="main" data-live-page>
+  <div class="page-head">
+    <h1>{{.T "nav.monitors"}}</h1>
+    <div class="filters">
+      <label class="visually-hidden" for="filter">{{.T "overview.search"}}</label>
+      <input id="filter" type="search" placeholder="{{.T "overview.search"}}" data-filter="#monitor-table tbody tr" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="tiles" id="tiles" data-live>
+    {{range .Tiles}}
+    <div class="tile {{.Class}}"><div class="label">{{.Label}}</div><div class="value">{{.Value}}</div>{{if .Note}}<div class="note">{{.Note}}</div>{{end}}</div>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table id="monitor-table" data-live>
+        <thead><tr>
+          <th>{{.T "col.status"}}</th>
+          <th>{{.T "col.monitor"}}</th>
+          <th class="num">{{.T "col.24h"}}</th>
+          <th class="num hide-sm">{{.T "col.7d"}}</th>
+          <th class="num hide-sm">{{.T "col.30d"}}</th>
+          <th class="num hide-sm">{{.T "col.latency"}}</th>
+          <th class="num">{{.T "col.last"}}</th>
+        </tr></thead>
+        <tbody>
+        {{range .Rows}}
+          <tr {{if eq .Status.String "down"}}class="row-down"{{end}} data-text="{{lower .Name}} {{lower .ID}} {{lower .Target}} {{.Type}}">
+            <td><span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{.StatusText}}</span></td>
+            <td class="name-cell">
+              <a href="/admin/monitors/{{.ID}}">{{.Name}}</a>
+              <span class="sub">{{.Type}} · {{.Target}}{{if not .Public}} · {{$.T "overview.private"}}{{end}}</span>
+              {{if .Message}}<span class="sub mono">{{.Message}}</span>{{end}}
+            </td>
+            <td class="num">{{.Up24}}</td>
+            <td class="num hide-sm">{{.Up7}}</td>
+            <td class="num hide-sm">{{.Up30}}</td>
+            <td class="num hide-sm"><span class="lat-cell">{{if .Spark}}{{.Spark}}{{end}}<span>{{if ne .Avg "–"}}{{.Avg}}<span class="sub">p95 {{.P95}}</span>{{else}}–{{end}}</span></span></td>
+            <td class="num"><span title="{{.LastAt}}">{{if .LastAgo}}{{.LastAgo}}{{else}}–{{end}}</span></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      <p class="empty-state" data-filter-empty hidden>{{.T "overview.none_match"}}</p>
+    </div>
+  </div>
+</main>
+{{end}}

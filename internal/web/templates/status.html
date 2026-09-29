@@ -1,0 +1,72 @@
+{{define "bodyclass"}}public{{end}}
+{{define "body"}}
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="{{.HomeHref}}">{{template "logo"}}<span>{{.SiteTitle}}</span></a>
+    <span class="spacer"></span>
+    <nav aria-label="{{.T "nav.links"}}">
+      {{range .Links}}<a href="{{.URL}}" rel="noopener">{{.Label}}</a>{{end}}
+      {{if and .Admin (not .Static)}}<a href="/admin">{{.T "nav.dashboard"}}</a>{{end}}
+    </nav>
+  </div>
+</header>
+<main class="wrap" id="main" {{if not .Static}}data-refresh="60"{{end}}>
+  {{if .Description}}<p class="lede">{{.Description}}</p>{{end}}
+
+  <section class="overall ov-{{.Overall}}" id="overall" aria-live="polite">
+    {{template "overall-icon" .Overall}}
+    <strong>{{.OverallText}}</strong>
+    <span class="muted">{{.T "status.updated" .Updated}}</span>
+  </section>
+
+  {{range .Maintenance}}
+  <div class="notice maint">
+    <strong>{{if .Active}}{{$.T "maint.active_title" .Name}}{{else}}{{$.T "maint.upcoming_title" .Name}}{{end}}</strong>
+    <span class="muted num">{{.When}}{{if .Affected}} · {{$.T "maint.affects" .Affected}}{{end}}</span>
+  </div>
+  {{end}}
+
+  {{range .Groups}}
+  <section class="group" aria-label="{{if .Name}}{{.Name}}{{else}}{{$.T "group.services"}}{{end}}">
+    {{if .Name}}<h2>{{.Name}}</h2>{{end}}
+    <ul class="monitors">
+      {{range .Monitors}}
+      <li class="monitor" id="m-{{.ID}}">
+        <div class="mon-head">
+          <a class="mon-name" href="{{$.HistoryHref .ID}}">{{.Name}}</a>
+          <span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{.StatusText}}</span>
+        </div>
+        {{if .Description}}<p class="mon-desc">{{.Description}}</p>{{end}}
+        <div class="bars-wide">{{.Bars}}</div>
+        <div class="bars-narrow">{{.BarsShort}}</div>
+        <div class="bars-axis">
+          <span><span class="wide-only">{{$.T "bars.days_ago" $.HistoryDays}}</span><span class="narrow-only">{{$.T "bars.days_ago" 30}}</span></span>
+          {{if .HasUptime}}<span class="up">{{$.T "bars.uptime" .Uptime}}</span>{{end}}
+          <span>{{$.T "bars.today"}}</span>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  <div class="legend" aria-label="{{.T "legend.label"}}">
+    <span><i class="sw lv-operational"></i>{{.T "level.operational"}}</span>
+    <span><i class="sw lv-degraded"></i>{{.T "level.degraded"}}</span>
+    <span><i class="sw lv-outage"></i>{{.T "level.outage"}}</span>
+    <span><i class="sw lv-maintenance"></i>{{.T "level.maintenance"}}</span>
+    <span><i class="sw lv-nodata"></i>{{.T "level.nodata"}}</span>
+  </div>
+
+  <section class="incidents">
+    <h2>{{.T "incidents.past"}}</h2>
+    <div class="incident-wrap">
+    {{if .IncidentDays}}{{template "incident-list" .}}{{else}}<p class="muted">{{.T "incidents.none" .IncidentWindow}}</p>{{end}}
+    </div>
+  </section>
+</main>
+<footer class="wrap site-foot">
+  <span>{{.T "footer.powered"}} <a href="https://github.com/useless-husband/pharos">Pharos</a></span>
+  <span>{{.T "footer.times" .TZ}}</span>
+</footer>
+{{end}}

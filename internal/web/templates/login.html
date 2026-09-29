@@ -1,0 +1,23 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+<main class="wrap">
+  <div class="login card">
+    <div class="card-body">
+      <span class="brand">{{template "logo"}}<span>Pharos</span></span>
+      <h1>{{.T "login.title"}}</h1>
+      <form method="post" action="/admin/login?next={{.Next}}">
+        <div class="field">
+          <label for="username">{{.T "login.username"}}</label>
+          <input id="username" name="username" type="text" autocomplete="username" value="{{.User}}" required autofocus>
+        </div>
+        <div class="field">
+          <label for="password">{{.T "login.password"}}</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        {{if .Error}}<p class="error-box" role="alert">{{.Error}}</p>{{end}}
+        <button class="btn primary" type="submit">{{.T "login.submit"}}</button>
+      </form>
+    </div>
+  </div>
+</main>
+{{end}}

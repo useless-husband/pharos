@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{if .Title}}{{.Title}} · {{end}}{{.SiteTitle}}</title>
+<link rel="icon" href="{{.Asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{.Asset "pharos.css"}}">
+{{if .CSRF}}<meta name="csrf-token" content="{{.CSRF}}">{{end}}
+{{block "head" .}}{{end}}
+<script src="{{.Asset "pharos.js"}}" defer></script>
+</head>
+<body class="{{block "bodyclass" .}}{{end}}">
+{{block "body" .}}{{end}}
+<div class="tip" role="tooltip" hidden></div>
+</body>
+</html>

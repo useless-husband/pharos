@@ -1,0 +1,39 @@
+{{define "bodyclass"}}admin{{end}}
+{{define "body"}}
+{{template "admin-header" .}}
+<main class="wrap" id="main" data-live-page>
+  <div class="page-head">
+    <h1>{{.T "nav.incidents"}}</h1>
+    <nav class="seg" aria-label="{{.T "incidents.filter"}}">
+      <a href="/admin/incidents" {{if not .OpenOnly}}aria-current="true"{{end}}>{{.T "checks.all"}}</a>
+      <a href="/admin/incidents?state=open" {{if .OpenOnly}}aria-current="true"{{end}}>{{.T "incidents.ongoing"}}</a>
+    </nav>
+  </div>
+  <div class="card" id="incident-table" data-live>
+    {{if .Rows}}
+    <div class="card-head"><span class="muted">{{.T "incidents.total" .Total}}</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>{{.T "col.monitor"}}</th><th>{{.T "col.started"}}</th><th class="num">{{.T "col.duration"}}</th>
+          <th>{{.T "col.cause"}}</th><th class="hide-sm">{{.T "col.resolution"}}</th>
+        </tr></thead>
+        <tbody>
+        {{range .Rows}}
+          <tr {{if .Ongoing}}class="row-down"{{end}}>
+            <td class="name-cell">{{if .Known}}<a href="/admin/monitors/{{.MonitorID}}">{{.Monitor}}</a>{{else}}{{.Monitor}} <span class="sub">{{$.T "incidents.removed"}}</span>{{end}}</td>
+            <td class="tnum">{{.Date}} {{.Start}}</td>
+            <td class="num">{{if .Ongoing}}<span class="tag bad">{{$.T "incidents.ongoing"}}</span> {{end}}{{.Duration}}</td>
+            <td class="msg">{{.Cause}}</td>
+            <td class="hide-sm">{{.Resolution}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="empty-state">{{.T "incidents.empty"}}</p>
+    {{end}}
+  </div>
+</main>
+{{end}}

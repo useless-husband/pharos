@@ -1,0 +1,61 @@
+{{define "bodyclass"}}public{{end}}
+{{define "body"}}
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="{{.HomeHref}}">{{template "logo"}}<span>{{.SiteTitle}}</span></a>
+  </div>
+</header>
+<main class="wrap">
+  <div class="crumbs"><a href="{{.HomeHref}}">← {{.T "history.back"}}</a></div>
+  <div class="page-head">
+    <h1>{{.Monitor.Name}}</h1>
+    <span class="st st-{{.Status}}">{{template "status-icon" .Status}}{{.StatusText}}</span>
+  </div>
+  {{if .Monitor.Description}}<p class="lede">{{.Monitor.Description}}</p>{{end}}
+  {{if .HasUptime}}<p class="muted">{{.T "history.summary" .Uptime .HistoryDays}}</p>{{end}}
+  <div class="bars-wide">{{.Bars}}</div>
+  <div class="legend">
+    <span><i class="sw lv-operational"></i>{{.T "level.operational"}}</span>
+    <span><i class="sw lv-degraded"></i>{{.T "level.degraded"}}</span>
+    <span><i class="sw lv-outage"></i>{{.T "level.outage"}}</span>
+    <span><i class="sw lv-maintenance"></i>{{.T "level.maintenance"}}</span>
+    <span><i class="sw lv-nodata"></i>{{.T "level.nodata"}}</span>
+  </div>
+
+  {{if .IncidentDays}}
+  <section>
+    <h2>{{.T "section.incidents"}}</h2>
+    <div class="incident-wrap">{{template "incident-list" .}}</div>
+  </section>
+  {{end}}
+
+  <section>
+    <h2>{{.T "history.daily"}}</h2>
+    <div class="card table-card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>{{.T "table.date"}}</th><th>{{.T "table.status"}}</th>
+            <th class="num">{{.T "table.availability"}}</th><th class="num">{{.T "table.downtime"}}</th><th class="num">{{.T "table.incidents"}}</th>
+          </tr></thead>
+          <tbody>
+          {{range .Rows}}
+            <tr>
+              <td class="tnum">{{.Date}}</td>
+              <td><span class="legend-inline"><i class="sw lv-{{.Level}}"></i> {{.LevelText}}</span></td>
+              <td class="num">{{.Uptime}}</td>
+              <td class="num">{{if .Downtime}}{{.Downtime}}{{else}}–{{end}}</td>
+              <td class="num">{{if .Incidents}}{{.Incidents}}{{else}}–{{end}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="wrap site-foot">
+  <span>{{.T "footer.powered"}} <a href="https://github.com/useless-husband/pharos">Pharos</a></span>
+  <span>{{.T "footer.times" .TZ}}</span>
+</footer>
+{{end}}
