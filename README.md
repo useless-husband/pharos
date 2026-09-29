@@ -36,6 +36,8 @@ Pharos checks your websites, APIs, servers and scheduled jobs, alerts you when s
 
 **Dashboard** — live updates · response-time charts with outages marked · check log · pause and resume · heartbeat URLs · notifier tests · configuration reload.
 
+![Monitor detail in dark mode, with response-time chart and timing breakdown](docs/images/monitor-dark.png)
+
 ## Quick start
 
 Try it with simulated data, no configuration needed:
