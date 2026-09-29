@@ -578,3 +578,26 @@ func reparse(t *testing.T, cfg *config.Config) {
 		}
 	}
 }
+
+func TestPushMonitorSurvivesRestart(t *testing.T) {
+	push := config.Monitor{ID: "backup", Name: "Nightly backup", Type: config.TypePush,
+		Heartbeat: config.Duration(24 * time.Hour), Grace: config.Duration(time.Hour), Interval: config.Duration(30 * time.Second)}
+	h := newHarness(t, baseConfig(push))
+	if _, err := h.engine.Push(h.engine.PushToken(push), true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(2 * time.Hour)
+	h.cancel()
+	h.engine.Wait()
+	h.cancel = nil
+	h.clock.Advance(30 * time.Minute)
+	h.startEngine()
+	if st := h.state("backup"); st.Status != model.StatusUp {
+		t.Fatalf("a push monitor between heartbeats must stay up across a restart, got %s", st.Status)
+	}
+	// The deadline restarts from the restart: 25h later without a heartbeat it is down.
+	h.advance(24*time.Hour + 61*time.Minute)
+	if st := h.state("backup"); st.Status != model.StatusDown {
+		t.Fatalf("missed heartbeat after restart: %s", st.Status)
+	}
+}

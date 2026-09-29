@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
@@ -129,6 +130,41 @@ func (s *Store) Secret(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	return s.Secret(ctx, key)
+}
+
+// SetMeta stores a small key/value setting.
+func (s *Store) SetMeta(ctx context.Context, key, value string) error {
+	_, err := s.w.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// Meta reads a key/value setting.
+func (s *Store) Meta(ctx context.Context, key string) (string, bool, error) {
+	var v string
+	err := s.w.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return v, err == nil, err
+}
+
+// Touch records that Pharos was running at t. After a restart, the gap
+// since the last touch is known to be unobserved.
+func (s *Store) Touch(ctx context.Context, t time.Time) error {
+	return s.SetMeta(ctx, "alive_at", strconv.FormatInt(ms(t), 10))
+}
+
+// AliveAt returns the last Touch, or zero.
+func (s *Store) AliveAt(ctx context.Context) (time.Time, error) {
+	v, ok, err := s.Meta(ctx, "alive_at")
+	if err != nil || !ok {
+		return time.Time{}, err
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return time.Time{}, nil
+	}
+	return fromMS(n), nil
 }
 
 // withTx runs fn in a write transaction.

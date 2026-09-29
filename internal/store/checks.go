@@ -26,6 +26,31 @@ func (s *Store) InsertCheck(ctx context.Context, c model.Check) error {
 	return err
 }
 
+// InsertChecks stores many results in one transaction.
+func (s *Store) InsertChecks(ctx context.Context, cs []model.Check) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO checks(monitor_id, at, status, latency_us, message, dns_us, connect_us, tls_us, ttfb_us, has_timing, cert_expiry, maintenance)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, c := range cs {
+			var t model.Timing
+			if c.Timing != nil {
+				t = *c.Timing
+			}
+			if _, err := stmt.ExecContext(ctx, c.MonitorID, ms(c.At), int(c.Status), c.Latency.Microseconds(), c.Message,
+				t.DNS.Microseconds(), t.Connect.Microseconds(), t.TLS.Microseconds(), t.FirstByte.Microseconds(),
+				c.Timing != nil, ms(c.CertExpiry), c.Maintenance); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 const checkCols = `monitor_id, at, status, latency_us, message, dns_us, connect_us, tls_us, ttfb_us, has_timing, cert_expiry, maintenance`
 
 func scanCheck(sc interface{ Scan(...any) error }) (model.Check, error) {

@@ -179,21 +179,30 @@ func later(a, b time.Time) time.Time {
 	return b
 }
 
-// housekeeping rolls up latency aggregates and prunes old data.
+// housekeeping marks liveness, rolls up latency aggregates and prunes old data.
 func (e *Engine) housekeeping(ctx context.Context) {
 	const historyKeep = 400 * 24 * time.Hour
-	var lastPrune time.Time
-	delay := time.Minute
+	var lastPrune, lastRollup time.Time
+	start := e.clock.Now()
 	for {
-		timer := e.clock.NewTimer(delay)
+		timer := e.clock.NewTimer(30 * time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			// Final liveness mark, so the next start knows exactly when
+			// monitoring stopped.
+			_ = e.store.Touch(context.Background(), e.clock.Now())
 			return
 		case <-timer.C():
 		}
-		delay = 5 * time.Minute
 		now := e.clock.Now()
+		if err := e.store.Touch(ctx, now); err != nil && ctx.Err() == nil {
+			e.log.Error("liveness mark", "err", err)
+		}
+		if now.Sub(lastRollup) < 5*time.Minute || now.Sub(start) < time.Minute {
+			continue
+		}
+		lastRollup = now
 		if err := e.store.Rollup(ctx, now); err != nil && ctx.Err() == nil {
 			e.log.Error("latency rollup", "err", err)
 		}

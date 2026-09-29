@@ -38,6 +38,9 @@ type Options struct {
 	MaxConcurrent int
 	// NewProber builds probers; tests replace it.
 	NewProber func(config.Monitor) (probe.Prober, error)
+	// ReadOnly loads state for display without running checks or writing
+	// to the database (used by `pharos export`).
+	ReadOnly bool
 }
 
 // Engine runs every monitor. It is safe for concurrent use.
@@ -49,6 +52,7 @@ type Engine struct {
 	newProber func(config.Monitor) (probe.Prober, error)
 	sem       chan struct{}
 	hub       *Hub
+	readOnly  bool
 
 	mu      sync.RWMutex
 	cfg     *config.Config
@@ -58,6 +62,7 @@ type Engine struct {
 	wg      sync.WaitGroup
 
 	pushKey []byte
+	aliveAt time.Time // last liveness mark before this start
 }
 
 // ErrNotFound is returned for unknown monitor ids and push tokens.
@@ -89,6 +94,7 @@ func New(opts Options) *Engine {
 		sem:       make(chan struct{}, opts.MaxConcurrent),
 		hub:       newHub(),
 		runners:   map[string]*runner{},
+		readOnly:  opts.ReadOnly,
 	}
 }
 
@@ -113,17 +119,25 @@ func (e *Engine) Start(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("load monitor state: %w", err)
 	}
 	now := e.clock.Now()
+	aliveAt, err := e.store.AliveAt(ctx)
+	if err != nil {
+		return fmt.Errorf("load liveness: %w", err)
+	}
 
 	e.mu.Lock()
 	e.ctx = ctx
 	e.cfg = cfg
+	e.aliveAt = aliveAt
 	e.mu.Unlock()
 
 	// Monitors that were removed from the configuration while Pharos was
 	// stopped: close their open history so they stop accruing time.
 	for id, st := range states {
+		if e.readOnly {
+			break
+		}
 		if _, ok := cfg.MonitorByID(id); !ok && st.Status != model.StatusUnknown && !st.Since.IsZero() {
-			e.retire(ctx, id, lastSeen(st, now))
+			e.retire(ctx, id, lastSeen(st, aliveAt, now))
 		}
 	}
 
@@ -136,6 +150,10 @@ func (e *Engine) Start(ctx context.Context, cfg *config.Config) error {
 		}
 		e.runners[m.ID] = r
 		e.order = append(e.order, m.ID)
+	}
+	if e.readOnly {
+		e.mu.Unlock()
+		return nil
 	}
 	for _, id := range e.order {
 		e.launch(e.runners[id])
@@ -154,11 +172,16 @@ func (e *Engine) Start(ctx context.Context, cfg *config.Config) error {
 // Wait blocks until every runner has stopped.
 func (e *Engine) Wait() { e.wg.Wait() }
 
-// lastSeen is the last moment Pharos actually observed a monitor.
-func lastSeen(st *store.MonitorState, now time.Time) time.Time {
+// lastSeen is the last moment Pharos is known to have been watching a
+// monitor: its last check, or the last liveness mark if that is later
+// (between checks the confirmed status is still known).
+func lastSeen(st *store.MonitorState, aliveAt, now time.Time) time.Time {
 	t := st.Since
 	if st.LastCheck != nil && st.LastCheck.At.After(t) {
 		t = st.LastCheck.At
+	}
+	if aliveAt.After(t) {
+		t = aliveAt
 	}
 	if t.IsZero() || t.After(now) {
 		t = now
@@ -182,8 +205,10 @@ func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.Moni
 		}
 		r.prober = p
 	}
-	if err := e.store.EnsureMonitor(ctx, m.ID, now); err != nil {
-		return nil, err
+	if !e.readOnly {
+		if err := e.store.EnsureMonitor(ctx, m.ID, now); err != nil {
+			return nil, err
+		}
 	}
 	r.firstSeen = now
 	if st == nil {
@@ -201,6 +226,13 @@ func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.Moni
 	if r.lastCheck != nil {
 		r.certExpiry = r.lastCheck.CertExpiry
 	}
+	if e.readOnly {
+		r.tracker.reset(st.Status, st.Since)
+		if st.Paused {
+			r.tracker.reset(model.StatusPaused, st.Since)
+		}
+		return r, nil
+	}
 	switch {
 	case st.Paused:
 		r.tracker.reset(model.StatusPaused, st.Since)
@@ -210,10 +242,14 @@ func (e *Engine) newRunner(ctx context.Context, m config.Monitor, st *store.Moni
 	case st.Status == model.StatusDown:
 		// Keep an ongoing outage open across the restart.
 		r.tracker.reset(model.StatusDown, st.Since)
+	case m.Type == config.TypePush && st.Status.Available():
+		// A push monitor's state is defined by its heartbeat deadline,
+		// which restarts from now (see checkHeartbeat): keep it.
+		r.tracker.reset(st.Status, st.Since)
 	case st.Status == model.StatusUp || st.Status == model.StatusDegraded || st.Status == model.StatusMaintenance:
 		// Pharos itself was not watching between its last observation and
 		// now: record that gap as unknown so it is not counted as uptime.
-		at := lastSeen(st, now)
+		at := lastSeen(st, e.aliveAt, now)
 		r.tracker.reset(model.StatusUnknown, at)
 		e.persist(ctx, r, change{from: st.Status, to: model.StatusUnknown, at: at}, "")
 	default:

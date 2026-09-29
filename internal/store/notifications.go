@@ -49,7 +49,7 @@ func (s *Store) Notifications(ctx context.Context, limit int) ([]NotificationLog
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT id, created, monitor_id, incident_id, event, notifier, state, attempts, last_error, delivered FROM notifications ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.r.QueryContext(ctx, `SELECT id, created, monitor_id, incident_id, event, notifier, state, attempts, last_error, delivered FROM notifications ORDER BY created DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
