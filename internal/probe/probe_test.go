@@ -299,7 +299,7 @@ func TestPingLoopback(t *testing.T) {
 		t.Skip("ICMP unavailable here (set PHAROS_TEST_PING=1 to require it): " + c.Message)
 	}
 	expect(t, c, model.StatusUp, "")
-	if c.Latency <= 0 || c.Latency > time.Second {
+	if c.Latency < 0 || c.Latency > time.Second { // loopback can measure 0 on coarse clocks
 		t.Errorf("latency %v", c.Latency)
 	}
 }
