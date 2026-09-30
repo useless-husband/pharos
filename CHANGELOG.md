@@ -4,7 +4,7 @@ All notable changes to Pharos are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pharos uses
 [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-01
 
 ### Added
 - `pharos check [monitor...]` probes monitors once from this machine and prints the status, response time, phase timing, failure reason and certificate expiry, or JSON with `-json`. Nothing is stored or sent. It exits 1 when a check is down.
@@ -51,5 +51,5 @@ First public release.
 - Configuration validation with line numbers, environment variable expansion and hot reload.
 - A demo mode with 90 days of simulated history.
 
-[Unreleased]: https://github.com/useless-husband/pharos/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/useless-husband/pharos/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/useless-husband/pharos/releases/tag/v0.1.0
