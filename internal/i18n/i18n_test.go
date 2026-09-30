@@ -69,3 +69,22 @@ func TestRelative(t *testing.T) {
 		t.Error("Short")
 	}
 }
+
+func TestFormatTimeNamesTheOffset(t *testing.T) {
+	at := time.Date(2026, 9, 30, 11, 8, 0, 0, time.UTC)
+	for zone, want := range map[string]string{
+		"UTC":              "2026-09-30 11:08 UTC",
+		"Asia/Taipei":      "2026-09-30 19:08 UTC+8",
+		"America/New_York": "2026-09-30 07:08 UTC-4",
+		"Asia/Kolkata":     "2026-09-30 16:38 UTC+5:30",
+		"America/St_Johns": "2026-09-30 08:38 UTC-2:30",
+	} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := FormatTime(at, loc); got != want {
+			t.Errorf("%s: %q, want %q", zone, got, want)
+		}
+	}
+}

@@ -45,7 +45,7 @@ Pharos POSTs this JSON document. Its shape is part of Pharos's stable interface.
   "previous_status": "up",
   "monitor": { "id": "api", "name": "Public API", "type": "http", "target": "https://api.example.com/health" },
   "title": "DOWN: Public API",
-  "text": "Public API is down.\nCause: HTTP 503 Service Unavailable\nSince: 2026-09-29 14:30 CST\nTarget: https://api.example.com/health",
+  "text": "Public API is down.\nCause: HTTP 503 Service Unavailable\nSince: 2026-09-29 14:30 UTC+8\nTarget: https://api.example.com/health",
   "message": "HTTP 503 Service Unavailable",
   "incident": { "id": 7, "monitor_id": "api", "started_at": "2026-09-29T06:30:00Z", "cause": "HTTP 503 Service Unavailable" },
   "url": "https://status.example.com/admin/monitors/api"
