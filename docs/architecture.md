@@ -37,7 +37,7 @@ flowchart LR
 
 ## From a check to an incident
 
-Each monitor has its own goroutine (a *runner*). After a start-up jitter derived from the monitor id, which spreads load after a restart, it probes on its interval. A shared semaphore bounds how many checks run at once. While a failure is being confirmed, or while the monitor is down, the runner switches to `retry_interval`.
+Each monitor has its own goroutine (a *runner*). After a start-up jitter derived from the monitor id, which spreads load after a restart, it probes on its interval. A runner never has more than one check in flight, and there is deliberately no global limit on top: a limit below the number of monitors makes checks wait behind timeouts exactly when many targets are unreachable, which delays the alerts that matter most ([measured](performance.md#during-an-outage)). While a failure is being confirmed, or while the monitor is down, the runner switches to `retry_interval`.
 
 Every result is stored, then fed to the monitor's *tracker*:
 
@@ -94,7 +94,7 @@ SQLite in WAL mode, through `modernc.org/sqlite`, a C-free driver, so Pharos cro
 | `notifications` | Delivery attempts | 400 days |
 | `monitors`, `meta` | Pause switches, certificate warning state, secrets, liveness | – |
 
-Hourly aggregates are rolled up every five minutes from completed hours, so long-range charts stay fast after raw checks are pruned. The current hour is always computed from raw checks. Pruning deletes in batches of 5,000 rows to keep write transactions short. Migrations are append-only and run at start-up.
+Hourly aggregates are rolled up every five minutes from completed hours, so long-range charts stay fast after raw checks are pruned. The current hour is always computed from raw checks. Pruning deletes in batches of 5,000 rows to keep write transactions short, then checkpoints the write-ahead log so the `-wal` file does not keep the size of the deleted data. Migrations are append-only and run at start-up. Measured resource use and database size are in [performance.md](performance.md).
 
 ## The web layer
 

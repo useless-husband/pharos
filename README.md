@@ -22,7 +22,7 @@ Pharos checks your websites, APIs, servers and scheduled jobs, alerts you when s
 - **Alerts you can trust.** A monitor is down only after several consecutive failures (you choose how many), and the outage is dated from the first one. A single timeout at 3 a.m. does not page anyone; a real outage is reported with its true start time.
 - **Availability that means something.** Availability is computed from time spent in each confirmed state, not by counting checks. Planned maintenance, paused monitors and periods when Pharos itself was not running are excluded, so 99.9% is a number you can put in a report.
 - **Private by default.** Only the monitors you list appear on the public page, and raw error messages, which can reveal internal hostnames, stay in the dashboard unless you choose to publish them. The dashboard refuses remote access until you set a password.
-- **Operationally boring.** Configuration as code with precise error messages, hot reload, Prometheus metrics, a JSON API, badges, a hardened systemd unit and a distroless container around a single 15 MB binary. English and Traditional Chinese.
+- **Operationally boring.** Configuration as code with precise error messages, hot reload, Prometheus metrics, a JSON API, badges, a hardened systemd unit and a distroless container around a single 15 MB binary. 1,000 monitors checked every 30 seconds use under 4% of a CPU core and 72 MB of memory, and a mass outage is confirmed as fast as a single one ([measured](docs/performance.md)). English and Traditional Chinese.
 
 ![Pharos dashboard](docs/images/dashboard.png)
 
@@ -57,6 +57,7 @@ go install github.com/useless-husband/pharos/cmd/pharos@latest
 # 2. Write and check a configuration
 pharos init                      # writes a commented pharos.yaml
 pharos validate -c pharos.yaml
+pharos check -c pharos.yaml      # probe every monitor once and show the results
 
 # 3. Run it
 pharos run -c pharos.yaml
@@ -121,6 +122,7 @@ With the default `confirm: {down: 3, up: 2}`, the outage above starts at the fir
 - [Deployment](docs/deployment.md) — Docker, systemd, reverse proxies, backups
 - [HTTP API](docs/api.md) — status JSON, push, badges, Prometheus metrics
 - [Architecture](docs/architecture.md) — how it works and why
+- [Performance](docs/performance.md) — measured resource use, page times and disk space for 100 to 1,000 monitors
 
 ## Choosing a tool
 
