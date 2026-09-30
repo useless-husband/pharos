@@ -85,6 +85,7 @@ jobs:
       - name: smoke test the image
         run: |
           set -euo pipefail
+          trap 'for c in demo pharos; do echo "--- logs of $c"; docker logs "$c" 2>&1 | tail -30 || true; done' ERR
           wait_for() {
             for _ in $(seq 60); do curl -fsS -o /dev/null "$1" 2>/dev/null && return 0; sleep 1; done
             echo "timed out waiting for $1"; return 1
@@ -138,8 +139,10 @@ jobs:
             sleep 1
           done
           test "$h" = healthy
-          # History survives a new container on the same volume.
-          docker rm -f pharos
+          # A graceful stop (SIGTERM to PID 1) records the time Pharos was
+          # watching, and the history survives a new container on the volume.
+          docker stop pharos
+          docker rm pharos
           run
           wait_for http://127.0.0.1:8082/healthz
           docker exec pharos pharos version
