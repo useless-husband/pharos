@@ -95,7 +95,9 @@ monitors:
 	if len(results) != 2 || results[0].ID != "ok" || results[1].ID != "broken" {
 		t.Fatalf("results out of order: %+v", results)
 	}
-	if r := results[0]; r.Status != model.StatusUp || r.Timing == nil || r.LatencyMS <= 0 {
+	// Loopback durations can be 0 on coarse clocks (Windows), so only the
+	// presence of the timing is checked.
+	if r := results[0]; r.Status != model.StatusUp || r.Timing == nil || r.LatencyMS < 0 {
 		t.Errorf("ok: %+v", r)
 	}
 	if r := results[1]; r.Status != model.StatusDown || !strings.Contains(r.Message, "503") {
