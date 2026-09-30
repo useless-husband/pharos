@@ -92,6 +92,26 @@ Common settings:
 | `notify` | Notifier names for this monitor. Omit to use `defaults.notify`; `notify: []` sends nothing. |
 | `expect.max_latency` | Checks slower than this are **degraded** rather than up. Must be shorter than the timeout. |
 
+### Trying a monitor
+
+`pharos check` probes monitors once from the machine it runs on and prints what a check would record: the status, the response time, the time spent in each phase and the reason for a failure. Nothing is stored and no notification is sent, so it is safe to run next to a live instance.
+
+```console
+$ pharos check -c pharos.yaml api db
+MONITOR  STATUS    TIME    TARGET
+api      up        142ms   https://api.example.com/health
+                           dns 12ms · connect 20ms · tls 45ms · first byte 60ms
+                           certificate valid until 2026-12-01 (61 days)
+db       down      5.0s    db.internal:5432
+                           connection timed out after 5s
+
+2 monitors checked: 1 up, 1 down.
+```
+
+Without monitor ids it checks every monitor except push monitors. `-json` prints the results for scripts. It exits with 1 when a check is down and 2 when the configuration is invalid or an id is unknown. It is a single probe: the confirmation thresholds and maintenance windows that decide a monitor's status do not apply.
+
+In a container, run it inside the container, where the network is the one Pharos uses: `docker exec pharos pharos check api`.
+
 ### http
 
 ```yaml

@@ -21,7 +21,7 @@ Pharos 會持續檢查你的網站、API、伺服器和排程工作，在服務�
 - **值得信任的警報。** 要連續失敗好幾次（次數可以自己設定）才算中斷，而且中斷時間從「第一次失敗」算起。半夜偶爾一次逾時不會把人叫醒；真的出事時，回報的開始時間也是準的。
 - **有意義的可用率。** 可用率依「確認後的狀態持續多久」計算，而不是數檢查次數。預定維護、暫停的監控、以及 Pharos 自己沒在運作的時段都會排除，所以 99.9% 是一個可以放進報告裡的數字。
 - **預設保護隱私。** 公開頁只顯示你指定的監控項目；錯誤訊息（可能透露內部主機名稱）預設只留在管理後台。在你設定密碼之前，管理後台拒絕所有遠端連線。
-- **維運上很省心。** 設定寫在檔案裡、可以進版本控制，錯誤訊息會標出第幾行；支援熱重載、Prometheus 指標、JSON API、徽章、強化過的 systemd 設定，以及只包一個 15 MB 執行檔的 distroless 容器。介面有英文和繁體中文。
+- **維運上很省心。** 設定寫在檔案裡、可以進版本控制，錯誤訊息會標出第幾行；支援熱重載、Prometheus 指標、JSON API、徽章、強化過的 systemd 設定，以及只包一個 15 MB 執行檔的 distroless 容器。1,000 個監控每 30 秒檢查一次，只用不到 4% 的單核 CPU 和 72 MB 記憶體；大量服務同時中斷時，確認速度和單一服務中斷一樣快（[實測數據](docs/performance.md)）。介面有英文和繁體中文。
 
 ## 功能
 
@@ -54,6 +54,7 @@ go install github.com/useless-husband/pharos/cmd/pharos@latest
 # 2. 產生並檢查設定檔
 pharos init                      # 產生附註解的 pharos.yaml
 pharos validate -c pharos.yaml
+pharos check -c pharos.yaml      # 每個監控實際檢查一次，顯示結果和各階段耗時
 
 # 3. 啟動
 pharos run -c pharos.yaml
@@ -120,6 +121,7 @@ Linux、macOS、Windows、FreeBSD 的執行檔都在 [Releases 頁面](https://g
 - [部署](docs/deployment.md)：Docker、systemd、反向代理、備份
 - [HTTP API](docs/api.md)：狀態 JSON、心跳、徽章、Prometheus 指標
 - [架構](docs/architecture.md)：運作原理與設計取捨
+- [效能](docs/performance.md)：100 到 1,000 個監控實測的資源用量、頁面速度與硬碟空間
 
 ## 怎麼選擇監控工具
 

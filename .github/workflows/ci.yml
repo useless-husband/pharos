@@ -75,3 +75,74 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: build the image for this runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: pharos:ci
+          cache-from: type=gha
+      - name: smoke test the image
+        run: |
+          set -euo pipefail
+          wait_for() {
+            for _ in $(seq 60); do curl -fsS -o /dev/null "$1" 2>/dev/null && return 0; sleep 1; done
+            echo "timed out waiting for $1"; return 1
+          }
+          status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+          # Demo mode: the status page and the dashboard work through a
+          # published port, where requests do not come from loopback.
+          docker run -d --name demo -p 8081:8080 pharos:ci demo -listen :8080
+          wait_for http://127.0.0.1:8081/healthz
+          test "$(status http://127.0.0.1:8081/)" = 200
+          test "$(status http://127.0.0.1:8081/admin)" = 200
+          curl -fsS http://127.0.0.1:8081/api/v1/status | jq -e '.groups | length > 0'
+          docker rm -f demo
+
+          # A real instance: default command, configuration mounted read-only,
+          # database on the volume as the nonroot user, monitoring itself.
+          mkdir -p "$RUNNER_TEMP/etc"
+          cat > "$RUNNER_TEMP/etc/pharos.yaml" <<'YAML'
+          status_page:
+            groups:
+              - name: Self
+                monitors: [self]
+          monitors:
+            - id: self
+              type: http
+              url: http://127.0.0.1:8080/healthz
+              interval: 5s
+            - id: github
+              type: http
+              url: https://github.com/
+          YAML
+          docker volume create pharos-data
+          run() { docker run -d --name pharos -p 8082:8080 -v "$RUNNER_TEMP/etc:/etc/pharos:ro" -v pharos-data:/data pharos:ci; }
+          run
+          wait_for http://127.0.0.1:8082/healthz
+          for _ in $(seq 30); do
+            s=$(curl -fsS http://127.0.0.1:8082/api/v1/status | jq -r '.groups[0].monitors[0].status')
+            [ "$s" = up ] && break
+            sleep 1
+          done
+          test "$s" = up
+          # Without a password the dashboard refuses clients that are not local.
+          test "$(status http://127.0.0.1:8082/admin)" = 403
+          # HTTPS checks work inside the image (CA certificates present).
+          docker exec pharos pharos check github
+          # The container reports healthy through its HEALTHCHECK.
+          for _ in $(seq 60); do
+            h=$(docker inspect -f '{{.State.Health.Status}}' pharos)
+            [ "$h" = healthy ] && break
+            sleep 1
+          done
+          test "$h" = healthy
+          # History survives a new container on the same volume.
+          docker rm -f pharos
+          run
+          wait_for http://127.0.0.1:8082/healthz
+          docker exec pharos pharos version
+          test "$(curl -fsS http://127.0.0.1:8082/api/v1/status | jq -r '.groups[0].monitors[0].uptime["24h"]')" != null
+          docker logs pharos 2>&1 | tail -20
+          docker rm -f pharos
