@@ -41,7 +41,7 @@ func downEvent() model.Event {
 func TestRender(t *testing.T) {
 	taipei, _ := time.LoadLocation("Asia/Taipei")
 	m := Render(downEvent(), "en", taipei, "https://status.example.com")
-	if m.Title != "DOWN: Public API" || !strings.Contains(m.Body, "Cause: HTTP 503") || !strings.Contains(m.Body, "2026-09-29 14:30 CST") {
+	if m.Title != "DOWN: Public API" || !strings.Contains(m.Body, "Cause: HTTP 503") || !strings.Contains(m.Body, "2026-09-29 14:30 UTC+8") {
 		t.Errorf("en down: %q / %q", m.Title, m.Body)
 	}
 	if m.Link != "https://status.example.com/admin/monitors/api" || m.Severity != SeverityCritical {

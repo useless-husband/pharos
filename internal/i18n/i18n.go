@@ -151,10 +151,29 @@ func plural(lang, unit string, n int) string {
 	return T(lang, "dur."+unit+".few", n)
 }
 
-// FormatTime renders an absolute time in loc: "2026-09-29 14:05 CST".
+// FormatTime renders an absolute time in loc: "2026-09-29 14:05 UTC+8".
 func FormatTime(t time.Time, loc *time.Location) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.In(loc).Format("2006-01-02 15:04 MST")
+	t = t.In(loc)
+	return t.Format("2006-01-02 15:04 ") + zoneLabel(t)
+}
+
+// zoneLabel names t's UTC offset, "UTC+8" or "UTC-3:30". Zone
+// abbreviations are ambiguous (CST is China, Cuba and US Central time) and
+// many zones have none.
+func zoneLabel(t time.Time) string {
+	_, off := t.Zone()
+	if off == 0 {
+		return "UTC"
+	}
+	sign := "+"
+	if off < 0 {
+		sign, off = "-", -off
+	}
+	if m := off % 3600 / 60; m != 0 {
+		return fmt.Sprintf("UTC%s%d:%02d", sign, off/3600, m)
+	}
+	return fmt.Sprintf("UTC%s%d", sign, off/3600)
 }
