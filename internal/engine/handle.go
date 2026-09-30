@@ -254,6 +254,9 @@ func (e *Engine) housekeeping(ctx context.Context) {
 			} else if n > 0 {
 				e.log.Info("pruned old checks", "deleted", n)
 			}
+			if err := e.store.Checkpoint(ctx); err != nil && ctx.Err() == nil {
+				e.log.Warn("checkpoint", "err", err)
+			}
 		}
 	}
 }

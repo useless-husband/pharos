@@ -35,7 +35,10 @@ type Options struct {
 	Notifier Notifier
 	Clock    clock.Clock
 	Logger   *slog.Logger
-	// MaxConcurrent bounds how many checks run at once. Default 32.
+	// MaxConcurrent bounds how many checks run at once across monitors.
+	// Zero, the default, means no bound beyond one check per monitor: a
+	// bound below the number of monitors makes checks queue behind timeouts
+	// exactly when many targets are unreachable, and delays the alerts.
 	MaxConcurrent int
 	// NewProber builds probers; tests replace it.
 	NewProber func(config.Monitor) (probe.Prober, error)
@@ -81,9 +84,6 @@ func New(opts Options) *Engine {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.MaxConcurrent <= 0 {
-		opts.MaxConcurrent = 32
-	}
 	if opts.NewProber == nil {
 		opts.NewProber = probe.New
 	}
@@ -96,7 +96,7 @@ func New(opts Options) *Engine {
 		clock:     opts.Clock,
 		log:       opts.Logger,
 		newProber: opts.NewProber,
-		sem:       make(chan struct{}, opts.MaxConcurrent),
+		sem:       semaphore(opts.MaxConcurrent),
 		hub:       newHub(),
 		runners:   map[string]*runner{},
 		readOnly:  opts.ReadOnly,
@@ -159,6 +159,11 @@ func (e *Engine) Start(ctx context.Context, cfg *config.Config) error {
 	if e.readOnly {
 		e.mu.Unlock()
 		return nil
+	}
+	// Fold in a write-ahead log left by the previous run before checks
+	// start writing, rather than stalling the first round.
+	if err := e.store.Checkpoint(ctx); err != nil {
+		e.log.Warn("checkpoint", "err", err)
 	}
 	for _, id := range e.order {
 		e.launch(e.runners[id])
@@ -509,14 +514,24 @@ func (e *Engine) Push(token string, ok bool, msg string, latency time.Duration) 
 	return id, nil
 }
 
+// semaphore returns a channel with n slots, or nil (no bound) for n <= 0.
+func semaphore(n int) chan struct{} {
+	if n <= 0 {
+		return nil
+	}
+	return make(chan struct{}, n)
+}
+
 // jitter spreads first checks over up to 10s so a restart does not fire
 // every monitor at the same instant. It is stable per monitor id.
 func jitter(id string, interval time.Duration) time.Duration {
-	h := fnv.New32a()
+	// A 64-bit hash: a 32-bit one tops out at 4.29e9 ns, so jitter would
+	// never exceed 4.3s whatever the span.
+	h := fnv.New64a()
 	h.Write([]byte(id))
 	span := min(interval, 10*time.Second)
 	if span <= 0 {
 		return 0
 	}
-	return time.Duration(h.Sum32()) % span
+	return time.Duration(h.Sum64() % uint64(span))
 }

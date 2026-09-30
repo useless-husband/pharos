@@ -177,6 +177,16 @@ func (s *Store) AliveAt(ctx context.Context) (time.Time, error) {
 	return fromMS(n), nil
 }
 
+// Checkpoint folds the write-ahead log back into the database and truncates
+// it. SQLite checkpoints automatically, but an automatic checkpoint cannot
+// finish while readers keep using the log, so under steady dashboard traffic
+// the log can grow without bound. Running this after large deletes keeps
+// it small.
+func (s *Store) Checkpoint(ctx context.Context) error {
+	_, err := s.w.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
+}
+
 // withTx runs fn in a write transaction.
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.w.BeginTx(ctx, nil)
