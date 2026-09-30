@@ -74,9 +74,7 @@ func TestHTTP(t *testing.T) {
 	t.Run("up with timings", func(t *testing.T) {
 		c := run(t, httpMonitor(srv.URL+"/ok"))
 		expect(t, c, model.StatusUp, "")
-		if c.Latency <= 0 || c.Timing == nil || c.Timing.FirstByte <= 0 {
-			t.Errorf("missing latency/timing: %+v %+v", c.Latency, c.Timing)
-		}
+		checkTiming(t, c)
 	})
 	t.Run("bad status", func(t *testing.T) {
 		expect(t, run(t, httpMonitor(srv.URL+"/fail")), model.StatusDown, "HTTP 503 Service Unavailable")
@@ -161,8 +159,9 @@ func TestHTTPS(t *testing.T) {
 	m.InsecureSkipVerify = true
 	c := run(t, m)
 	expect(t, c, model.StatusUp, "")
-	if c.CertExpiry.IsZero() || c.Timing.TLS <= 0 {
-		t.Errorf("cert expiry %v, tls timing %v", c.CertExpiry, c.Timing.TLS)
+	checkTiming(t, c)
+	if c.CertExpiry.IsZero() {
+		t.Error("certificate expiry missing")
 	}
 	// Plain HTTP spoken to a TLS port.
 	plain := httpMonitor(strings.Replace(srv.URL, "https://", "http://", 1))
@@ -191,9 +190,7 @@ func TestTCP(t *testing.T) {
 	m := config.Monitor{ID: "t", Type: config.TypeTCP, Address: ln.Addr().String(), Timeout: dur(time.Second)}
 	c := run(t, m)
 	expect(t, c, model.StatusUp, "")
-	if c.Timing == nil || c.Timing.Connect <= 0 {
-		t.Error("connect timing missing")
-	}
+	checkTiming(t, c)
 	m.Expect.Banner = "SSH-2.0"
 	expect(t, run(t, m), model.StatusUp, "")
 	m.Expect.Banner = "220 smtp"
@@ -343,5 +340,20 @@ func TestFailureMessagesNeverContainTheURL(t *testing.T) {
 	c := run(t, httpMonitor(loop.URL+"/v1/health?api_key="+secret))
 	if c.Status != model.StatusDown || strings.Contains(c.Message, "sk_live_") || !strings.Contains(c.Message, "redirects") {
 		t.Errorf("message %q", c.Message)
+	}
+}
+
+// checkTiming asserts that a check has a phase breakdown that fits in its
+// latency. Phases on loopback can measure 0 on coarse clocks (Windows ticks
+// in 0.5 to 15.6 ms steps), so zero is allowed.
+func checkTiming(t *testing.T, c model.Check) {
+	t.Helper()
+	if c.Timing == nil {
+		t.Fatalf("no timing: %+v", c)
+	}
+	for name, d := range map[string]time.Duration{"dns": c.Timing.DNS, "connect": c.Timing.Connect, "tls": c.Timing.TLS, "first byte": c.Timing.FirstByte} {
+		if d < 0 || d > c.Latency {
+			t.Errorf("%s phase %s outside [0, latency %s]", name, d, c.Latency)
+		}
 	}
 }
