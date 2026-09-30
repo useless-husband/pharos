@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -804,5 +805,82 @@ func TestTransitionsNeverOverlap(t *testing.T) {
 		if list[i].Start.Before(list[i-1].Start) || (!list[i-1].End.IsZero() && list[i].Start.Before(list[i-1].End)) {
 			t.Fatalf("overlapping periods: %+v", list)
 		}
+	}
+}
+
+func TestJitterSpansTheWholeWindow(t *testing.T) {
+	var maxJ time.Duration
+	for i := 0; i < 2000; i++ {
+		j := jitter(fmt.Sprintf("monitor-%d", i), time.Minute)
+		if j < 0 || j >= 10*time.Second {
+			t.Fatalf("jitter %s out of range", j)
+		}
+		maxJ = max(maxJ, j)
+	}
+	if maxJ < 9*time.Second {
+		t.Errorf("jitter never exceeds %s: first checks are not spread over 10s", maxJ)
+	}
+}
+
+// hang is a prober that blocks until released, like a target that never
+// answers, and counts how many checks are waiting at once.
+type hang struct {
+	mu            sync.Mutex
+	inFlight, max int
+	release       chan struct{}
+}
+
+func (h *hang) Probe(ctx context.Context) model.Check {
+	h.mu.Lock()
+	h.inFlight++
+	h.max = max(h.max, h.inFlight)
+	h.mu.Unlock()
+	select {
+	case <-h.release:
+	case <-ctx.Done():
+	}
+	h.mu.Lock()
+	h.inFlight--
+	h.mu.Unlock()
+	return downc("timeout")
+}
+
+// An outage that makes many targets time out at once must not make other
+// checks wait for a free slot: every monitor keeps its own schedule.
+func TestUnreachableTargetsDoNotQueueOtherChecks(t *testing.T) {
+	const n = 100
+	var mons []config.Monitor
+	for i := range n {
+		mons = append(mons, httpMon(fmt.Sprintf("m%d", i)))
+	}
+	cfg := baseConfig(mons...)
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "pharos.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fc := clock.NewFake(start)
+	p := &hang{release: make(chan struct{})}
+	e := New(Options{Store: st, Clock: fc, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		NewProber: func(config.Monitor) (probe.Prober, error) { return p, nil }})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { close(p.release); cancel(); e.Wait() }()
+	if err := e.Start(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	fc.BlockUntil(n+1, 5*time.Second)
+	fc.Advance(11 * time.Second) // past every start-up jitter
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.mu.Lock()
+		got := p.max
+		p.mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d checks in flight at once: checks are queueing", got, n)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }

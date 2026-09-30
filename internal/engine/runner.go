@@ -65,14 +65,18 @@ func (e *Engine) run(ctx context.Context, r *runner) {
 			continue
 		}
 
-		select {
-		case e.sem <- struct{}{}:
-		case <-ctx.Done():
-			return
+		if e.sem != nil {
+			select {
+			case e.sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		start := e.clock.Now()
 		c := prober.Probe(ctx)
-		<-e.sem
+		if e.sem != nil {
+			<-e.sem
+		}
 		if ctx.Err() != nil {
 			return // a check cut short by shutdown is not a failure
 		}
