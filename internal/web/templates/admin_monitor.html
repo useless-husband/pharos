@@ -1,7 +1,7 @@
 {{define "bodyclass"}}admin{{end}}
 {{define "body"}}
 {{template "admin-header" .}}
-<main class="wrap" id="main" data-live-page>
+<main class="wrap" id="main" data-live-page data-monitor="{{.M.ID}}">
   <div class="crumbs"><a href="/admin">{{.T "nav.monitors"}}</a> /</div>
   <div class="page-head" id="head" data-live>
     <div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -85,6 +86,13 @@ func (s *Store) LastCheck(ctx context.Context, id string) (*model.Check, error) 
 		return nil, err
 	}
 	return &c, nil
+}
+
+// CountChecks returns the number of check results stored since t.
+func (s *Store) CountChecks(ctx context.Context, since time.Time) (int, error) {
+	var n int
+	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM checks WHERE at >= ?`, ms(since)).Scan(&n)
+	return n, err
 }
 
 // CheckQuery filters Checks.
@@ -285,31 +293,80 @@ func (s *Store) LatencySeries(ctx context.Context, id string, from, to time.Time
 	if bucket < time.Hour {
 		return s.rawSeries(ctx, id, from, to, bucket)
 	}
-	type hourAgg struct {
-		checks, ok    int
-		sum, max, p95 int64
+	hours, err := s.hourly(ctx, id, from, to)
+	if err != nil {
+		return nil, err
 	}
-	hours := map[int64]hourAgg{}
-	rows, err := s.r.QueryContext(ctx, `SELECT hour, checks, ok, sum_us, max_us, p95_us FROM latency_hourly WHERE monitor_id = ? AND hour >= ? AND hour < ?`,
-		id, ms(from.Truncate(time.Hour)), ms(to))
+	return bucketize(hours[id], from, to, bucket), nil
+}
+
+// LatencySeriesAll is LatencySeries for every monitor at once, keyed by
+// monitor id, for buckets of an hour or more. Pages that list every monitor
+// use it: it reads the database in a few passes instead of a few queries
+// per monitor.
+func (s *Store) LatencySeriesAll(ctx context.Context, from, to time.Time, bucket time.Duration) (map[string][]LatencyPoint, error) {
+	if bucket < time.Hour {
+		return nil, fmt.Errorf("LatencySeriesAll: bucket %s is shorter than an hour", bucket)
+	}
+	hours, err := s.hourly(ctx, "", from, to)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]LatencyPoint, len(hours))
+	for id, hs := range hours {
+		out[id] = bucketize(hs, from, to, bucket)
+	}
+	return out, nil
+}
+
+type hourAgg struct {
+	checks, ok    int
+	sum, max, p95 int64
+}
+
+// hourly returns hourly aggregates in [from, to) keyed by monitor id and
+// hour: rolled-up hours from latency_hourly, the others from raw checks.
+// An empty id means every monitor.
+func (s *Store) hourly(ctx context.Context, id string, from, to time.Time) (map[string]map[int64]hourAgg, error) {
+	out := map[string]map[int64]hourAgg{}
+	put := func(mon string, h int64, a hourAgg) {
+		m := out[mon]
+		if m == nil {
+			m = map[int64]hourAgg{}
+			out[mon] = m
+		}
+		if _, done := m[h]; !done {
+			m[h] = a
+		}
+	}
+	q := `SELECT monitor_id, hour, checks, ok, sum_us, max_us, p95_us FROM latency_hourly WHERE monitor_id = ? AND hour >= ? AND hour < ?`
+	args := []any{id, ms(from.Truncate(time.Hour)), ms(to)}
+	if id == "" {
+		// Seek the primary key once per monitor rather than scanning every
+		// monitor's 400 days of aggregates.
+		q = `SELECT monitor_id, hour, checks, ok, sum_us, max_us, p95_us FROM latency_hourly WHERE monitor_id IN (SELECT id FROM monitors) AND hour >= ? AND hour < ?`
+		args = args[1:]
+	}
+	rows, err := s.r.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
+		var mon string
 		var h int64
 		var a hourAgg
-		if err := rows.Scan(&h, &a.checks, &a.ok, &a.sum, &a.max, &a.p95); err != nil {
+		if err := rows.Scan(&mon, &h, &a.checks, &a.ok, &a.sum, &a.max, &a.p95); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		hours[h] = a
+		put(mon, h, a)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Fill hours missing from the rollup table from raw checks, limited to
+	// Hours missing from the rollup table come from raw checks, limited to
 	// the raw data that can exist (retention) by the query itself.
 	var rolledUntil sql.NullInt64
 	_ = s.r.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'rollup_until'`).Scan(&rolledUntil)
@@ -317,21 +374,69 @@ func (s *Store) LatencySeries(ctx context.Context, id string, from, to time.Time
 	if rolledUntil.Valid && fromMS(rolledUntil.Int64).After(rawFrom) {
 		rawFrom = fromMS(rolledUntil.Int64)
 	}
-	if rawFrom.Before(to) {
-		raw, err := s.rawSeries(ctx, id, rawFrom.Truncate(time.Hour), to, time.Hour)
-		if err != nil {
+	if !rawFrom.Before(to) {
+		return out, nil
+	}
+	q = `SELECT monitor_id, at, status, latency_us FROM checks WHERE monitor_id = ? AND at >= ? AND at < ? AND maintenance = 0`
+	args = []any{id, ms(rawFrom.Truncate(time.Hour)), ms(to)}
+	if id == "" {
+		q = `SELECT monitor_id, at, status, latency_us FROM checks WHERE at >= ? AND at < ? AND maintenance = 0`
+		args = args[1:]
+	}
+	rows, err = s.r.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	type key struct {
+		mon  string
+		hour int64
+	}
+	raw := map[key]*struct {
+		checks int
+		lats   []int64
+	}{}
+	for rows.Next() {
+		var mon string
+		var at, lat int64
+		var status int
+		if err := rows.Scan(&mon, &at, &status, &lat); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		for _, p := range raw {
-			h := ms(p.Start)
-			if _, done := hours[h]; done {
-				continue
-			}
-			hours[h] = hourAgg{checks: p.Checks, ok: p.OK, sum: p.Avg.Microseconds() * int64(p.OK),
-				max: p.Max.Microseconds(), p95: p.P95.Microseconds()}
+		k := key{mon, ms(fromMS(at).Truncate(time.Hour))}
+		a := raw[k]
+		if a == nil {
+			a = &struct {
+				checks int
+				lats   []int64
+			}{}
+			raw[k] = a
+		}
+		a.checks++
+		if model.Status(status).Available() {
+			a.lats = append(a.lats, lat)
 		}
 	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for k, a := range raw {
+		h := hourAgg{checks: a.checks, ok: len(a.lats)}
+		if len(a.lats) > 0 {
+			sort.Slice(a.lats, func(i, j int) bool { return a.lats[i] < a.lats[j] })
+			for _, v := range a.lats {
+				h.sum += v
+			}
+			h.max, h.p95 = a.lats[len(a.lats)-1], percentile(a.lats, 0.95)
+		}
+		put(k.mon, k.hour, h)
+	}
+	return out, nil
+}
 
+// bucketize combines hourly aggregates into buckets aligned to from.
+func bucketize(hours map[int64]hourAgg, from, to time.Time, bucket time.Duration) []LatencyPoint {
 	type acc struct {
 		LatencyPoint
 		sum int64
@@ -362,7 +467,7 @@ func (s *Store) LatencySeries(ctx context.Context, id string, from, to time.Time
 		out = append(out, b.LatencyPoint)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
-	return out, nil
+	return out
 }
 
 func bucketStart(t, origin time.Time, bucket time.Duration) time.Time {
