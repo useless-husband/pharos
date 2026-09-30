@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -207,6 +208,55 @@ func TestRollupAndLatencySeries(t *testing.T) {
 	fine, _ := s.LatencySeries(ctx, "api", base, base.Add(time.Hour), 10*time.Minute)
 	if len(fine) != 6 || fine[0].Checks != 10 {
 		t.Errorf("10m buckets %+v", fine)
+	}
+}
+
+func TestLatencySeriesAllMatchesPerMonitor(t *testing.T) {
+	s := open(t)
+	for i, id := range []string{"api", "db", "web"} {
+		if err := s.EnsureMonitor(ctx, id, base); err != nil {
+			t.Fatal(err)
+		}
+		// Three hours of checks, one monitor with failures, one with a
+		// maintenance window whose checks must not count.
+		for m := 0; m < 180; m++ {
+			c := model.Check{MonitorID: id, At: base.Add(time.Duration(m)*time.Minute + time.Duration(i)*time.Second),
+				Status: model.StatusUp, Latency: time.Duration(50+10*i+m%7) * time.Millisecond}
+			if id == "db" && m%40 == 0 {
+				c.Status, c.Latency = model.StatusDown, 5*time.Second
+			}
+			if id == "web" && m >= 100 && m < 110 {
+				c.Maintenance, c.Latency = true, 3*time.Second
+			}
+			if err := s.InsertCheck(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := s.Rollup(ctx, base.Add(170*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range []time.Duration{time.Hour, 2 * time.Hour, 3 * time.Hour} {
+		from, to := base.Add(30*time.Minute), base.Add(175*time.Minute)
+		all, err := s.LatencySeriesAll(ctx, from, to, bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(all) != 3 {
+			t.Fatalf("%s: %d monitors, want 3", bucket, len(all))
+		}
+		for _, id := range []string{"api", "db", "web"} {
+			one, err := s.LatencySeries(ctx, id, from, to, bucket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(one) != fmt.Sprint(all[id]) {
+				t.Errorf("%s %s:\n one: %v\n all: %v", bucket, id, one, all[id])
+			}
+		}
+	}
+	if _, err := s.LatencySeriesAll(ctx, base, base.Add(time.Hour), 10*time.Minute); err == nil {
+		t.Error("buckets under an hour: want an error")
 	}
 }
 

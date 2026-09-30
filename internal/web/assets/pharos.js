@@ -55,9 +55,11 @@
   // or the whole <main> on the public page. Charts and open <details> keep
   // their state because they are not replaced.
   let refreshing = false;
+  let refreshCost = 0; // ms the last refresh took, fetch to swap
   async function refresh(whole) {
     if (refreshing) return;
     refreshing = true;
+    const started = performance.now();
     try {
       const res = await fetch(location.href, { headers: { "X-Requested-With": "pharos" }, credentials: "same-origin" });
       if (!res.ok) return;
@@ -73,7 +75,7 @@
         });
       }
     } catch (_) { /* offline: keep the current view */ }
-    finally { refreshing = false; }
+    finally { refreshing = false; refreshCost = performance.now() - started; }
   }
 
   function autoRefresh() {
@@ -85,15 +87,22 @@
   }
 
   function liveEvents() {
-    if (!$("[data-live-page]") || !window.EventSource) return;
+    const page = $("[data-live-page]");
+    if (!page || !window.EventSource) return;
+    const only = page.dataset.monitor; // a monitor's page ignores the others
     const dot = $("[data-live-dot]");
     let timer = null;
     const es = new EventSource("/admin/events");
     // Throttle, not debounce: with many monitors, events never pause long
-    // enough for a debounce to fire. Refresh at most every 1.5 s.
-    const schedule = () => {
+    // enough for a debounce to fire. Refresh at most every 1.5 s, and wait
+    // 20 times as long as the last refresh took, so a large dashboard left
+    // open costs the server at most about 5% of its time.
+    const schedule = (e) => {
+      if (only) {
+        try { if (JSON.parse(e.data).monitor !== only) return; } catch (_) { /* refresh anyway */ }
+      }
       if (timer) return;
-      timer = setTimeout(() => { timer = null; refresh(false); }, 1500);
+      timer = setTimeout(() => { timer = null; refresh(false); }, Math.max(1500, 20 * refreshCost));
     };
     es.addEventListener("open", () => dot && dot.classList.add("on"));
     es.addEventListener("error", () => dot && dot.classList.remove("on"));

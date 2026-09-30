@@ -67,6 +67,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	open, _ := s.store.Incidents(ctx, store.IncidentQuery{OpenOnly: true})
+	spark, err := s.store.LatencySeriesAll(ctx, now.Add(-24*time.Hour).Truncate(time.Hour), now, time.Hour)
+	if err != nil {
+		s.errorPage(w, r, http.StatusInternalServerError, "error.internal")
+		return
+	}
 
 	var rows []overviewRow
 	counts := map[model.Status]int{}
@@ -96,13 +101,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			row.Message = st.Incident.Cause
 		}
 		if m.Type != config.TypePush {
-			pts, err := s.store.LatencySeries(ctx, m.ID, now.Add(-24*time.Hour).Truncate(time.Hour), now, time.Hour)
-			if err == nil {
-				row.Spark = sparkline(pts)
-				avg, p95 := summarizeLatency(pts)
-				if avg > 0 {
-					row.Avg, row.P95 = i18n.Short(avg), i18n.Short(p95)
-				}
+			pts := spark[m.ID]
+			row.Spark = sparkline(pts)
+			avg, p95 := summarizeLatency(pts)
+			if avg > 0 {
+				row.Avg, row.P95 = i18n.Short(avg), i18n.Short(p95)
 			}
 		}
 		rows = append(rows, row)
