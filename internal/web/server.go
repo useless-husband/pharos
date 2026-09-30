@@ -48,6 +48,10 @@ type Options struct {
 	Reload func() error
 	// Now overrides the clock (demo mode, tests).
 	Now func() time.Time
+	// OpenDashboard lets every visitor use the dashboard without a password.
+	// Only for demo mode, whose data is simulated: a real instance must
+	// never set it.
+	OpenDashboard bool
 }
 
 // Server is the HTTP front end.
@@ -59,6 +63,7 @@ type Server struct {
 	version string
 	reload  func() error
 	now     func() time.Time
+	open    bool // Options.OpenDashboard
 
 	pages       map[string]*template.Template
 	assetHashes map[string]string
@@ -81,7 +86,7 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	}
 	s := &Server{
 		engine: opts.Engine, store: opts.Store, notify: opts.Notify, log: opts.Logger,
-		version: opts.Version, reload: opts.Reload, now: opts.Now,
+		version: opts.Version, reload: opts.Reload, now: opts.Now, open: opts.OpenDashboard,
 		secret: secret, limiter: newLimiter(10, 10*time.Minute), started: opts.Now(),
 	}
 	if err := s.hashAssets(); err != nil {

@@ -132,7 +132,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-	} else if !s.localRequest(r) {
+	} else if !s.open && !s.localRequest(r) {
 		http.Error(w, "metrics are served to local clients only; set server.metrics.token to scrape remotely", http.StatusForbidden)
 		return
 	}
