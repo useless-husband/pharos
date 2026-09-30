@@ -56,6 +56,7 @@ Usage:
 Commands:
   run            Start monitoring and serve the status page and dashboard
   validate       Check a configuration file and report every problem
+  check          Probe monitors once and show the result and its timing
   init           Write an example configuration file
   hash-password  Create a password hash for server.admin.password_hash
   notify-test    Send a test notification through one notifier
@@ -78,8 +79,10 @@ func main() {
 	switch cmd {
 	case "run":
 		err = cmdRun(args)
-	case "validate", "check":
+	case "validate":
 		err = cmdValidate(args)
+	case "check":
+		err = cmdCheck(args)
 	case "init":
 		err = cmdInit(args)
 	case "hash-password":
@@ -193,13 +196,25 @@ func cmdRun(args []string) error {
 	setUserAgent()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return serve(ctx, cfg, *cfgPath, log, nil, engine.Options{}, notify.Options{})
+	return serve(ctx, cfg, log, serveOptions{cfgPath: *cfgPath})
 }
 
-// serve runs the engine and HTTP server until ctx ends. st may be an
-// already opened store (the demo's in-memory database); otherwise the
-// configured database is opened.
-func serve(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Logger, st *store.Store, eopts engine.Options, nopts notify.Options) error {
+type serveOptions struct {
+	// cfgPath is the configuration file, re-read on reload. Empty disables
+	// reloading.
+	cfgPath string
+	// store is an already opened store (the demo's in-memory database);
+	// when nil the configured database is opened.
+	store  *store.Store
+	engine engine.Options
+	notify notify.Options
+	// demo opens the dashboard to every visitor: its data is simulated.
+	demo bool
+}
+
+// serve runs the engine and HTTP server until ctx ends.
+func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, o serveOptions) error {
+	cfgPath, st, eopts, nopts := o.cfgPath, o.store, o.engine, o.notify
 	log.Info("starting pharos", "version", buildVersion(), "config", cfgPath, "database", cfg.Storage.Path, "monitors", len(cfg.Monitors))
 	if st == nil {
 		var err error
@@ -230,11 +245,11 @@ func serve(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Lo
 	if cfgPath != "" {
 		reload = a.reload
 	}
-	srv, err := web.New(ctx, web.Options{Engine: eng, Store: st, Notify: disp, Logger: log, Version: buildVersion(), Reload: reload})
+	srv, err := web.New(ctx, web.Options{Engine: eng, Store: st, Notify: disp, Logger: log, Version: buildVersion(), Reload: reload, OpenDashboard: o.demo})
 	if err != nil {
 		return err
 	}
-	if cfg.Server.Admin.PasswordHash == "" {
+	if cfg.Server.Admin.PasswordHash == "" && !o.demo {
 		log.Warn("no admin password set: the dashboard only accepts connections from this machine")
 	}
 
@@ -479,7 +494,8 @@ func cmdDemo(args []string) error {
 		host = "localhost" + host
 	}
 	fmt.Fprintf(os.Stderr, "\nPharos demo with 90 days of simulated history (kept in memory, nothing is sent anywhere).\n  Status page: http://%s/\n  Dashboard:   http://%s/admin\nPress Ctrl+C to stop.\n\n", host, host)
-	return serve(ctx, cfg, "", log, st, engine.Options{NewProber: demo.NewProber}, notify.Options{NewSender: demo.NewSender})
+	return serve(ctx, cfg, log, serveOptions{store: st, demo: true,
+		engine: engine.Options{NewProber: demo.NewProber}, notify: notify.Options{NewSender: demo.NewSender}})
 }
 
 func cmdHealthcheck(args []string) error {

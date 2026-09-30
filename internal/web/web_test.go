@@ -271,6 +271,30 @@ func TestLocalOnlyWithoutPassword(t *testing.T) {
 	}
 }
 
+func TestDemoDashboardIsOpen(t *testing.T) {
+	e := newEnv(t, nil)
+	srv, err := New(context.Background(), Options{Engine: e.engine, Store: e.store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OpenDashboard: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.h = srv.Handler()
+	// In a container, the published port reaches the server from the
+	// bridge gateway, never from loopback.
+	gw := remote("172.17.0.1:40000")
+	for _, p := range []string{"/admin", "/admin/monitors/api", "/api/v1/admin/monitors", "/metrics"} {
+		if w := e.do("GET", p, nil, gw); w.Code != 200 {
+			t.Errorf("%s: %d, want 200 in demo mode", p, w.Code)
+		}
+	}
+	if w := e.do("GET", "/admin/login", nil, gw); w.Code != http.StatusSeeOther {
+		t.Errorf("login page: %d, want a redirect to the dashboard", w.Code)
+	}
+	// Writes still need the CSRF token.
+	if w := e.do("POST", "/admin/monitors/api/pause", nil, gw); w.Code != 403 {
+		t.Errorf("POST without CSRF in demo mode: %d", w.Code)
+	}
+}
+
 func TestLoginSessionsAndCSRF(t *testing.T) {
 	e := newEnv(t, withPassword)
 	if w := e.do("GET", "/admin/monitors/api", nil); w.Code != http.StatusSeeOther || !strings.HasPrefix(w.Header().Get("Location"), "/admin/login?next=") {

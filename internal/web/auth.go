@@ -120,12 +120,13 @@ func (s *Server) localRequest(r *http.Request) bool {
 func localSession() session { return session{user: "local", nonce: "local"} }
 
 // currentSession returns the signed-in session, or the implicit local
-// session when no password is configured and the client is on loopback.
+// session when no password is configured and the client is on loopback (or
+// anywhere, in demo mode).
 func (s *Server) currentSession(r *http.Request) (session, bool) {
 	if sess, ok := s.session(r); ok {
 		return sess, true
 	}
-	if !s.passwordSet() && s.localRequest(r) {
+	if !s.passwordSet() && (s.open || s.localRequest(r)) {
 		return localSession(), true
 	}
 	return session{}, false
@@ -198,7 +199,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.passwordSet() {
-		if s.localRequest(r) {
+		if s.open || s.localRequest(r) {
 			http.Redirect(w, r, "/admin", http.StatusSeeOther)
 			return
 		}
