@@ -55,13 +55,16 @@
   // or the whole <main> on the public page. Charts and open <details> keep
   // their state because they are not replaced.
   let refreshing = false;
-  let refreshCost = 0; // ms the last refresh took, fetch to swap
+  let refreshCost = 0; // ms the last successful refresh took, fetch to swap
+  let refreshDone = 0; // performance.now() when the last refresh ended
   async function refresh(whole) {
     if (refreshing) return;
     refreshing = true;
     const started = performance.now();
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 20000); // a stalled request must not stop live updates
     try {
-      const res = await fetch(location.href, { headers: { "X-Requested-With": "pharos" }, credentials: "same-origin" });
+      const res = await fetch(location.href, { headers: { "X-Requested-With": "pharos" }, credentials: "same-origin", signal: abort.signal });
       if (!res.ok) return;
       const doc = new DOMParser().parseFromString(await res.text(), "text/html");
       if (whole) {
@@ -74,8 +77,9 @@
           if (cur) { cur.replaceWith(next); init(next); }
         });
       }
-    } catch (_) { /* offline: keep the current view */ }
-    finally { refreshing = false; refreshCost = performance.now() - started; }
+      refreshCost = performance.now() - started;
+    } catch (_) { /* offline or timed out: keep the current view */ }
+    finally { clearTimeout(timeout); refreshing = false; refreshDone = performance.now(); }
   }
 
   function autoRefresh() {
@@ -94,15 +98,27 @@
     let timer = null;
     const es = new EventSource("/admin/events");
     // Throttle, not debounce: with many monitors, events never pause long
-    // enough for a debounce to fire. Refresh at most every 1.5 s, and wait
-    // 20 times as long as the last refresh took, so a large dashboard left
-    // open costs the server at most about 5% of its time.
+    // enough for a debounce to fire. Between the end of one refresh and the
+    // start of the next, wait 1.5 s, or 20 times as long as the last
+    // successful refresh took, so a large dashboard left open costs the
+    // server about 5% of its time at most; but never more than 30 s, so a
+    // slow server still updates the page (at a higher share of its time).
+    const pace = () => Math.min(30000, Math.max(1500, 20 * refreshCost));
     const schedule = (e) => {
       if (only) {
         try { if (JSON.parse(e.data).monitor !== only) return; } catch (_) { /* refresh anyway */ }
       }
       if (timer) return;
-      timer = setTimeout(() => { timer = null; refresh(false); }, Math.max(1500, 20 * refreshCost));
+      // A refresh still running when the timer fires may predate this
+      // event: wait for it to end, and for the pace after it, rather than
+      // dropping the update.
+      const fire = () => {
+        const wait = refreshing ? 500 : refreshDone + pace() - performance.now();
+        if (wait > 0) { timer = setTimeout(fire, wait); return; }
+        timer = null;
+        refresh(false);
+      };
+      timer = setTimeout(fire, pace());
     };
     es.addEventListener("open", () => dot && dot.classList.add("on"));
     es.addEventListener("error", () => dot && dot.classList.remove("on"));
