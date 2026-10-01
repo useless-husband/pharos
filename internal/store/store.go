@@ -47,7 +47,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 		dsn := "file:" + uriPath(path) + "?" + pragmas +
 			"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
-		w, err := sql.Open("sqlite", dsn)
+		// journal_size_limit: once the write-ahead log has been checkpointed
+		// and starts over, SQLite truncates the file to 64 MB, so a burst of
+		// writes (a large prune) does not leave a large -wal file behind.
+		w, err := sql.Open("sqlite", dsn+"&_pragma=journal_size_limit(67108864)")
 		if err != nil {
 			return nil, err
 		}
@@ -177,14 +180,14 @@ func (s *Store) AliveAt(ctx context.Context) (time.Time, error) {
 	return fromMS(n), nil
 }
 
-// Checkpoint folds the write-ahead log back into the database and truncates
-// it. SQLite checkpoints automatically, but an automatic checkpoint cannot
-// finish while readers keep using the log, so under steady dashboard traffic
-// the log can grow without bound. Running this after large deletes keeps
-// it small.
+// Checkpoint copies what it can of the write-ahead log into the database,
+// without waiting: pages that a reader still needs (the dashboard, or a
+// backup tool holding a snapshot) stay for the next checkpoint. It never
+// blocks on readers, so check results are never held up behind one; the
+// log file is kept small by journal_size_limit when it starts over.
 func (s *Store) Checkpoint(ctx context.Context) error {
-	_, err := s.w.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-	return err
+	var busy, frames, done int
+	return s.w.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).Scan(&busy, &frames, &done)
 }
 
 // withTx runs fn in a write transaction.

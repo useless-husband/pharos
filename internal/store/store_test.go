@@ -303,3 +303,35 @@ func TestPercentile(t *testing.T) {
 		t.Error("nearest-rank percentile")
 	}
 }
+
+// A reader holding a snapshot, such as a backup tool, must not hold up the
+// checkpoint or the writes that follow it.
+func TestCheckpointDoesNotWaitForReaders(t *testing.T) {
+	s := open(t)
+	for i := range 2000 {
+		_ = s.InsertCheck(ctx, model.Check{MonitorID: "api", At: base.Add(time.Duration(i) * time.Second), Status: model.StatusUp})
+	}
+	tx, err := s.r.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM checks`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := s.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCheck(ctx, model.Check{MonitorID: "api", At: base, Status: model.StatusUp}); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("checkpoint and write took %s with a reader open", d)
+	}
+	var limit int64
+	if err := s.w.QueryRowContext(ctx, `PRAGMA journal_size_limit`).Scan(&limit); err != nil || limit != 64<<20 {
+		t.Errorf("journal_size_limit = %d (%v), want 64 MiB", limit, err)
+	}
+}
