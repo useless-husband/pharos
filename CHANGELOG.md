@@ -4,7 +4,7 @@ All notable changes to Pharos are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pharos uses
 [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-01
 
 ### Added
 - **Alerts that happen together are sent together.** Slack, Discord, Telegram, ntfy and email notifiers send at most one message per `group_interval` (default 10 s): the first alert after a quiet interval goes out at once, and the alerts that follow are combined into one message ("Monitors: 23 down, 1 recovered") with a line per alert. When 300 of 1,000 monitors failed at once, with a channel enforcing Discord's rate limits, all 300 alerts arrived in two messages; before, 55 arrived within five minutes and the channel refused 1,065 requests. `group_interval: 0s` restores one message per alert; webhooks never group.
@@ -65,6 +65,6 @@ First public release.
 - Configuration validation with line numbers, environment variable expansion and hot reload.
 - A demo mode with 90 days of simulated history.
 
-[Unreleased]: https://github.com/useless-husband/pharos/compare/v0.2.0...HEAD
+[0.3.0]: https://github.com/useless-husband/pharos/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/useless-husband/pharos/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/useless-husband/pharos/releases/tag/v0.1.0
