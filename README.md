@@ -32,7 +32,7 @@ Pharos checks your websites, APIs, servers and scheduled jobs, alerts you when s
 
 **Status page** — 90-day history per service · incident history · maintenance announcements · groups · automatic refresh · light and dark themes · static export for hosting anywhere.
 
-**Alerts** — Slack, Discord, Telegram, ntfy, email and signed webhooks · recovery messages with outage length · reminders while an outage lasts · certificate expiry warnings · retries with backoff and a delivery log.
+**Alerts** — Slack, Discord, Telegram, ntfy, email and signed webhooks · recovery messages with outage length · reminders while an outage lasts · certificate expiry warnings · alerts that happen together arrive as one message instead of flooding the channel · retries that respect rate limits, and a delivery log.
 
 **Dashboard** — live updates · response-time charts with outages marked · check log · pause and resume · heartbeat URLs · notifier tests · configuration reload.
 

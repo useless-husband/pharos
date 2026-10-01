@@ -19,12 +19,14 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/useless-husband/pharos/internal/config"
 	"github.com/useless-husband/pharos/internal/engine"
 	"github.com/useless-husband/pharos/internal/model"
+	"github.com/useless-husband/pharos/internal/notify"
 	"github.com/useless-husband/pharos/internal/store"
 	"github.com/useless-husband/pharos/internal/web"
 )
@@ -39,7 +41,16 @@ func main() {
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of the page requests to this file")
 	concurrency := flag.Int("concurrency", 0, "checks allowed at once (default: the engine's default)")
 	hang := flag.Float64("hang", 0, "fraction of targets that never answer, as in a network outage (0 to 1)")
+	chatFlag := flag.Bool("chat", false, "send alerts to a local chat service with Discord's webhook rate limits")
+	groupFlag := flag.String("group", "", "group_interval of the chat notifier (default: Pharos's default)")
+	useTLS := flag.Bool("tls", false, "serve the targets over HTTPS (certificate chain verification is skipped)")
+	serveTargetFlag := flag.Bool("serve-target", false, "internal: run as the target process")
+	targetHang := flag.Int("target-hang", 0, "internal: unreachable targets in the target process")
 	flag.Parse()
+	if *serveTargetFlag {
+		serveTarget(*targetHang, *useTLS)
+		return
+	}
 	history, err := config.ParseDuration(*historyFlag)
 	must(err)
 	if *dir == "" {
@@ -51,14 +62,20 @@ func main() {
 
 	// A local target that answers like a typical health endpoint.
 	hangN := int(*hang * float64(*monitors))
-	target := startTarget(hangN)
+	target, stopTarget := startTarget(hangN, *useTLS)
+	defer stopTarget()
 	fmt.Printf("target %s, %d monitors every %s, %s of history", target, *monitors, *interval, *historyFlag)
 	if hangN > 0 {
 		fmt.Printf(", %d of them unreachable", hangN)
 	}
 	fmt.Print("\n\n")
 
-	cfg := buildConfig(filepath.Join(*dir, "pharos.db"), target, *monitors, *interval)
+	var ch *chat
+	chatURL := ""
+	if *chatFlag {
+		ch, chatURL = startChat()
+	}
+	cfg := buildConfig(filepath.Join(*dir, "pharos.db"), target, *monitors, *interval, chatURL, *groupFlag, *useTLS)
 	st, err := store.Open(ctx, cfg.Storage.Path)
 	must(err)
 	defer st.Close()
@@ -74,7 +91,9 @@ func main() {
 	if *verbose {
 		quiet = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	}
-	eng := engine.New(engine.Options{Store: st, Logger: quiet, MaxConcurrent: *concurrency})
+	disp, err := notify.NewDispatcher(cfg, notify.Options{Log: st, Logger: quiet})
+	must(err)
+	eng := engine.New(engine.Options{Store: st, Logger: quiet, Notifier: disp, MaxConcurrent: *concurrency})
 	ectx, stop := context.WithCancel(ctx)
 	must(eng.Start(ectx, cfg))
 	srv, err := web.New(ctx, web.Options{Engine: eng, Store: st, Logger: quiet, Version: "loadtest"})
@@ -129,6 +148,32 @@ func main() {
 		}
 		fmt.Printf("| Unreachable monitors confirmed down | %s |\n", line)
 	}
+	if ch != nil {
+		// One delivery log entry per alert, whether or not it shared its
+		// message with others.
+		logs, err := st.Notifications(ctx, 100000)
+		must(err)
+		states := map[string]int{}
+		var delivered []time.Duration
+		for _, l := range logs {
+			if l.Created.Before(start) {
+				continue
+			}
+			states[l.State]++
+			if l.State == store.NotifyDelivered && l.Event == "down" {
+				delivered = append(delivered, l.Delivered.Sub(start))
+			}
+		}
+		sort.Slice(delivered, func(i, j int) bool { return delivered[i] < delivered[j] })
+		line := fmt.Sprintf("%d of %d", len(delivered), hangN)
+		if len(delivered) > 0 {
+			line += fmt.Sprintf("; median %s, slowest %s after the start", delivered[len(delivered)/2].Round(time.Second), delivered[len(delivered)-1].Round(time.Second))
+		}
+		fmt.Printf("| Down alerts delivered to the chat | %s |\n", line)
+		fmt.Printf("| Alerts delivered, still retrying, given up | %d, %d, %d |\n", states[store.NotifyDelivered], states[store.NotifyPending], states[store.NotifyFailed])
+		posted, limited := ch.report()
+		fmt.Printf("| Chat messages posted | %d (%d more refused with 429) |\n", posted, limited)
+	}
 	if cpuBefore >= 0 {
 		fmt.Printf("| CPU time | %s (%.1f%% of one core) |\n", cpu.Round(time.Millisecond), 100*cpu.Seconds()/elapsed.Seconds())
 	}
@@ -144,7 +189,13 @@ func main() {
 		must(pprof.StartCPUProfile(f))
 		defer pprof.StopCPUProfile()
 	}
-	fmt.Printf("\n## Page response times (20 requests each, while checking)\n\n| Page | median | p95 |\n|---|---|---|\n")
+	raw := "all"
+	if v, ok, err := st.Meta(ctx, "rollup_until"); err == nil && ok {
+		if until, err := strconv.ParseInt(v, 10, 64); err == nil {
+			raw = fmt.Sprintf("%.0f minutes", time.Since(time.UnixMilli(until)).Minutes())
+		}
+	}
+	fmt.Printf("\n## Page response times (20 requests each, while checking)\n\nChecks not aggregated into hours yet: %s.\n\n| Page | median | p95 |\n|---|---|---|\n", raw)
 	for _, p := range []struct{ name, path string }{
 		{"Status page", "/"},
 		{"Status JSON", "/api/v1/status"},
@@ -158,11 +209,24 @@ func main() {
 	}
 	stop()
 	eng.Wait()
+	closing, cancel := context.WithTimeout(ctx, time.Second)
+	disp.Close(closing)
+	cancel()
 }
 
-func buildConfig(dbPath, target string, n int, interval time.Duration) *config.Config {
+func buildConfig(dbPath, target string, n int, interval time.Duration, chatURL, group string, insecure bool) *config.Config {
 	var b strings.Builder
-	fmt.Fprintf(&b, "storage: {path: %q}\nstatus_page:\n  groups:\n    - name: Public\n      monitors: [", dbPath)
+	fmt.Fprintf(&b, "storage: {path: %q}\n", dbPath)
+	notifyDefault := ""
+	if chatURL != "" {
+		extra := ""
+		if group != "" {
+			extra = ", group_interval: " + group
+		}
+		fmt.Fprintf(&b, "notifiers:\n  - {name: chat, type: discord, url: %q%s}\n", chatURL, extra)
+		notifyDefault = ", notify: [chat]"
+	}
+	b.WriteString("status_page:\n  groups:\n    - name: Public\n      monitors: [")
 	public := max(1, n/5)
 	for i := 0; i < public; i++ {
 		if i > 0 {
@@ -170,9 +234,9 @@ func buildConfig(dbPath, target string, n int, interval time.Duration) *config.C
 		}
 		fmt.Fprintf(&b, "m-%04d", i+1)
 	}
-	fmt.Fprintf(&b, "]\ndefaults: {interval: %s}\nmonitors:\n", config.FormatDuration(interval))
+	fmt.Fprintf(&b, "]\ndefaults: {interval: %s%s}\nmonitors:\n", config.FormatDuration(interval), notifyDefault)
 	for i := 0; i < n; i++ {
-		fmt.Fprintf(&b, "  - {id: m-%04d, type: http, url: \"%s/svc/%d\", expect: {max_latency: 1s}}\n", i+1, target, i+1)
+		fmt.Fprintf(&b, "  - {id: m-%04d, type: http, url: \"%s/svc/%d\", insecure_skip_verify: %t, expect: {max_latency: 1s}}\n", i+1, target, i+1, insecure)
 	}
 	cfg, err := config.Parse([]byte(b.String()), "", func(string) (string, bool) { return "", false })
 	must(err)
@@ -236,24 +300,6 @@ func seed(ctx context.Context, st *store.Store, cfg *config.Config, now time.Tim
 	}
 	must(st.InsertChecks(ctx, batch))
 	return total + len(batch)
-}
-
-// startTarget serves the monitored endpoints /svc/1 to /svc/N. The first
-// hang of them never answer, like hosts behind a failed network link: the
-// check waits for its full timeout.
-func startTarget(hang int) string {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	must(err)
-	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:errcheck
-		var n int
-		if _, err := fmt.Sscanf(r.URL.Path, "/svc/%d", &n); err == nil && n <= hang {
-			<-r.Context().Done()
-			return
-		}
-		time.Sleep(time.Duration(2+rand.IntN(20)) * time.Millisecond)
-		fmt.Fprint(w, `{"status":"ok"}`)
-	}))
-	return "http://" + ln.Addr().String()
 }
 
 func countChecks(ctx context.Context, st *store.Store, since time.Time) int {
