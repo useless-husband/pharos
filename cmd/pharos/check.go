@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,7 +28,9 @@ time, the time spent in each phase and the reason for a failure. Nothing is
 stored and no notification is sent. Without monitor ids, every monitor except
 push monitors is checked.
 
-Exits 1 when a check is down, 2 when the configuration is invalid.
+Exits 0 when every check is up or degraded, 1 when one is down, 2 when the
+configuration cannot be read or is invalid or a monitor id is unknown, and
+130 when interrupted.
 
 Flags:
 `
@@ -63,19 +66,32 @@ func cmdCheck(args []string) error {
 		fs.PrintDefaults()
 	}
 	ids := parseInterspersed(fs, args)
+	usageError := func(err error) {
+		var ce *config.Error
+		if errors.As(err, &ce) {
+			fmt.Fprintln(os.Stderr, ce.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, "pharos:", err)
+		}
+		os.Exit(2)
+	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		return err
+		usageError(err) // including a missing or unreadable file
 	}
 	monitors, skipped, err := selectMonitors(cfg, ids)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "pharos:", err)
-		os.Exit(2)
+		usageError(err)
 	}
 	setUserAgent()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	results, err := runChecks(ctx, cfg, monitors)
+	if errors.Is(err, context.Canceled) {
+		// Checks cut short report a failure that did not happen: print none.
+		fmt.Fprintln(os.Stderr, "pharos: interrupted")
+		os.Exit(130)
+	}
 	if err != nil {
 		return err
 	}
