@@ -487,6 +487,15 @@ func validate(c *Config, doc *yaml.Node, e *Error) {
 		default:
 			add(tl, "%s: unknown type %q (use webhook, slack, discord, telegram, email or ntfy)", where, n.Type)
 		}
+		if g := n.GroupInterval; g != nil {
+			gl := keyLine(node, "group_interval")
+			switch {
+			case n.Type == NotifyWebhook && g.D() != 0:
+				add(gl, "%s: group_interval is not supported for webhooks, whose payload describes one event", where)
+			case g.D() < 0 || g.D() > time.Hour:
+				add(gl, "%s: group_interval must be between 0 and 1h", where)
+			}
+		}
 		for _, ev := range n.Events {
 			if !eventNames[ev] {
 				add(keyLine(node, "events"), "%s: unknown event %q (use down, up, degraded, reminder, cert)", where, ev)

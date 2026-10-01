@@ -175,6 +175,29 @@ type Notifier struct {
 	// Events limits which events this notifier receives. Default: all
 	// except "degraded".
 	Events []string `yaml:"events"`
+
+	// GroupInterval is the least time between two messages: alerts that
+	// happen in between are sent together as one message. Unset means
+	// DefaultGroupInterval, except for webhooks, whose payload describes
+	// one event and which never group. Zero sends every alert on its own.
+	GroupInterval *Duration `yaml:"group_interval"`
+}
+
+// DefaultGroupInterval is the group_interval of chat, push and email
+// notifiers. Chat services limit how fast a webhook may post (Discord: 5
+// messages per 2 seconds and 30 per minute), and a person reads one message
+// about thirty outages better than thirty messages.
+const DefaultGroupInterval = 10 * time.Second
+
+// Grouping returns the notifier's effective group interval.
+func (n Notifier) Grouping() time.Duration {
+	switch {
+	case n.Type == NotifyWebhook:
+		return 0
+	case n.GroupInterval != nil:
+		return n.GroupInterval.D()
+	}
+	return DefaultGroupInterval
 }
 
 // Wants reports whether the notifier subscribes to an event.

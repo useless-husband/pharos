@@ -353,6 +353,33 @@ func TestNotifierWants(t *testing.T) {
 	}
 }
 
+func TestGroupInterval(t *testing.T) {
+	cfg := mustParse(t, `
+notifiers:
+  - {name: chat, type: discord, url: "https://discord.example/hook"}
+  - {name: slow, type: slack, url: "https://slack.example/hook", group_interval: 1m}
+  - {name: each, type: telegram, token: t, chat_id: "1", group_interval: 0s}
+  - {name: hook, type: webhook, url: "https://hooks.example/"}
+monitors:
+  - {id: web, type: http, url: "https://example.com/"}
+`)
+	for name, want := range map[string]time.Duration{"chat": DefaultGroupInterval, "slow": time.Minute, "each": 0, "hook": 0} {
+		if n, _ := cfg.NotifierByName(name); n.Grouping() != want {
+			t.Errorf("%s: group interval %s, want %s", name, n.Grouping(), want)
+		}
+	}
+	ps := problems(t, `
+notifiers:
+  - {name: hook, type: webhook, url: "https://hooks.example/", group_interval: 10s}
+  - {name: chat, type: discord, url: "https://discord.example/hook", group_interval: 2h}
+monitors:
+  - {id: web, type: http, url: "https://example.com/"}
+`, nil)
+	if !hasProblem(ps, 3, "not supported for webhooks") || !hasProblem(ps, 4, "between 0 and 1h") {
+		t.Errorf("problems: %v", ps)
+	}
+}
+
 func TestFingerprintChangesWithProbeSettings(t *testing.T) {
 	a := Monitor{ID: "web", Type: TypeHTTP, URL: "https://a.example", Line: 3}
 	b := a

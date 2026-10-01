@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,41 @@ type PermanentError struct{ Err error }
 
 func (e *PermanentError) Error() string { return e.Err.Error() }
 func (e *PermanentError) Unwrap() error { return e.Err }
+
+// RateLimitError is a refusal to take more messages for now (HTTP 429).
+// After is how long the service asked to wait, or zero if it did not say.
+type RateLimitError struct {
+	After time.Duration
+	Err   error
+}
+
+func (e *RateLimitError) Error() string { return e.Err.Error() }
+func (e *RateLimitError) Unwrap() error { return e.Err }
+
+// retryAfter reads how long a 429 response asks to wait: the Retry-After
+// header (seconds or an HTTP date; Slack, Discord, ntfy), or retry_after in
+// the JSON body (Discord, and Telegram under "parameters").
+func retryAfter(h http.Header, body []byte, now time.Time) time.Duration {
+	var d time.Duration
+	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {
+		if secs, err := strconv.ParseFloat(v, 64); err == nil {
+			d = time.Duration(secs * float64(time.Second))
+		} else if t, err := http.ParseTime(v); err == nil {
+			d = t.Sub(now)
+		}
+	} else {
+		var b struct {
+			RetryAfter float64 `json:"retry_after"`
+			Parameters struct {
+				RetryAfter float64 `json:"retry_after"`
+			} `json:"parameters"`
+		}
+		if json.Unmarshal(body, &b) == nil {
+			d = time.Duration(max(b.RetryAfter, b.Parameters.RetryAfter) * float64(time.Second))
+		}
+	}
+	return min(max(d, 0), time.Hour)
+}
 
 // UserAgent is sent with every HTTP notification.
 var UserAgent = "Pharos"
@@ -75,6 +111,9 @@ func postJSON(ctx context.Context, rawURL string, body []byte, headers map[strin
 		return nil
 	}
 	err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &RateLimitError{After: retryAfter(resp.Header, snippet, time.Now()), Err: err}
+	}
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusRequestTimeout {
 		return &PermanentError{err}
 	}
@@ -157,7 +196,8 @@ func colorOf(s Severity) int {
 type slack struct{ url string }
 
 func (s *slack) Send(ctx context.Context, m Message) error {
-	text := "*" + slackEscape(m.Title) + "*\n" + slackEscape(m.Body)
+	// Slack rejects section text over 3,000 characters.
+	text := truncate("*"+slackEscape(m.Title)+"*\n"+slackEscape(m.Body), 3000)
 	blocks := []any{map[string]any{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": text}}}
 	if m.Link != "" {
 		blocks = append(blocks, map[string]any{"type": "context", "elements": []any{
@@ -209,8 +249,12 @@ func (t *telegram) Send(ctx context.Context, m Message) error {
 	// Never leak the bot token into logs, but keep the retry decision.
 	redacted := errors.New(strings.ReplaceAll(err.Error(), t.token, "[token]"))
 	var perm *PermanentError
-	if errors.As(err, &perm) {
+	var limit *RateLimitError
+	switch {
+	case errors.As(err, &perm):
 		return &PermanentError{redacted}
+	case errors.As(err, &limit):
+		return &RateLimitError{After: limit.After, Err: redacted}
 	}
 	return redacted
 }
