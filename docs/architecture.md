@@ -111,7 +111,7 @@ A reload prepares everything that can fail (probers, new runners) before touchin
 
 ## Notifications
 
-The dispatcher routes an event to the monitor's notifiers, filtered by each notifier's `events`. Deliveries for the same monitor and notifier are chained so they arrive in order; otherwise each runs in its own goroutine (at most eight send at once) with backoff of 5 s, 30 s, 2 min and 10 min. A 4xx response other than 408 or 429 is permanent and not retried. Every attempt is logged in the database. On shutdown the dispatcher waits up to ten seconds for in-flight deliveries; entries still pending at the next start are marked as interrupted.
+The dispatcher routes an event to the monitor's notifiers, filtered by each notifier's `events`. Chat, push and email notifiers group: each has one goroutine that sends at most one message per `group_interval`, the first event after a quiet interval at once and everything that arrived meanwhile as one message, so their messages go out one after another, in order, and a rate-limited channel is never flooded. Webhook deliveries for the same monitor are chained so they arrive in order; otherwise each runs in its own goroutine. At most eight messages are sent at once, with backoff of 5 s, 30 s, 2 min and 10 min. A 429 waits as long as the service asks and does not use up a retry; another 4xx other than 408 is permanent and not retried. Every attempt is logged in the database. On shutdown the dispatcher waits up to ten seconds for in-flight deliveries; entries still pending at the next start are marked as interrupted.
 
 ## Testing
 

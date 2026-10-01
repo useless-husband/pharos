@@ -16,9 +16,31 @@ A notifier receives every event except `degraded` unless it lists `events`. Noth
 
 Events for the same monitor and notifier are delivered in order: a recovery message never overtakes a down alert that is still being retried.
 
+## Alerts that happen together
+
+When many monitors fail at once, for example because a network link went down, one message per monitor would flood the channel and run into the channel's rate limit (a Discord webhook takes 5 messages per 2 seconds and 30 per minute), delaying the alerts that matter. So Slack, Discord, Telegram, ntfy and email notifiers send **at most one message per `group_interval`** (default `10s`):
+
+- An alert after a quiet interval is sent **at once**; a single outage is never delayed.
+- Alerts that follow within the interval wait for it to end and go out together:
+
+  ```
+  Monitors: 3 down, 1 recovered
+  • DOWN: Public API · HTTP 503 Service Unavailable
+  • DOWN: Sign-in · timed out after 10s
+  • DOWN: Search · connection refused
+  • RECOVERED: CDN · down for 2 minutes
+  ```
+
+  A grouped message lists up to 20 alerts, then "…and 12 more", and links to the dashboard overview.
+- Alerts that arrive while a message is being retried join the next one, so a channel that was unreachable gets one catch-up message.
+
+Set `group_interval: 0s` on a notifier to send every alert on its own; they still go out one at a time, so a rate limit is met by one refused request rather than a crowd of retries. Webhooks never group and are sent in parallel: their payload describes one event, and the receiving program can batch as it likes. Every alert appears in the delivery log as *pending* as soon as it is queued.
+
+With 1,000 monitors of which 300 became unreachable at once and a channel enforcing Discord's limits, all 300 alerts arrived in two messages, the first as soon as the first outage was confirmed. Pharos 0.2.0, which sent one message per alert, got 55 of them through in five minutes ([measured](performance.md#during-an-outage)).
+
 ## Delivery and retries
 
-Deliveries run in the background and never slow down checks. A failed delivery is retried after 5 s, 30 s, 2 min and 10 min. HTTP 4xx responses (except 408 and 429) mean the request itself is wrong, such as a deleted webhook, so they are not retried. Every attempt appears in the dashboard's *Delivery log*. Errors never contain webhook URLs or bot tokens, which usually embed secrets.
+Deliveries run in the background and never slow down checks. A failed delivery is retried after 5 s, 30 s, 2 min and 10 min. When a service answers 429 Too Many Requests, Pharos waits as long as it asks (`Retry-After`, or `retry_after` in Discord's and Telegram's replies) and tries again without counting it as a failure. Other HTTP 4xx responses (except 408) mean the request itself is wrong, such as a deleted webhook, so they are not retried. Every attempt appears in the dashboard's *Delivery log*. Errors never contain webhook URLs or bot tokens, which usually embed secrets.
 
 Test a notifier with `pharos notify-test -c pharos.yaml <name>` or the *Send test* button in the dashboard.
 

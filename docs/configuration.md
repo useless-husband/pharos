@@ -108,7 +108,7 @@ db       down      5.0s    db.internal:5432
 2 monitors checked: 1 up, 1 down.
 ```
 
-Without monitor ids it checks every monitor except push monitors. `-json` prints the results for scripts. It exits with 1 when a check is down and 2 when the configuration is invalid or an id is unknown. It is a single probe: the confirmation thresholds and maintenance windows that decide a monitor's status do not apply.
+Without monitor ids it checks every monitor except push monitors. `-json` prints the results for scripts. It exits with 1 when a check is down, 2 when the configuration cannot be read or is invalid or an id is unknown, and 130 when interrupted. It is a single probe: the confirmation thresholds and maintenance windows that decide a monitor's status do not apply.
 
 In a container, run it inside the container, where the network is the one Pharos uses: `docker exec pharos pharos check api`.
 
@@ -218,6 +218,7 @@ notifiers:
     type: slack
     url: ${SLACK_WEBHOOK_URL}
     events: [down, up]      # default: everything except degraded
+    group_interval: 10s     # at most one message per 10s; alerts in between go out together
 ```
 
 | Type | Settings |
@@ -229,7 +230,9 @@ notifiers:
 | `ntfy` | `url` (topic URL, e.g. `https://ntfy.sh/my-alerts`), optional `token` |
 | `email` | `from`, `to` (list), `smtp.host`, `smtp.port`, `smtp.username`, `smtp.password`, `smtp.security` (`starttls`, `tls` or `none`) |
 
-Events: `down`, `up`, `degraded` (slow, and back to normal), `reminder`, `cert`. See [notifications.md](notifications.md) for payloads and retry behavior. Send a test with `pharos notify-test -c pharos.yaml <name>` or from the dashboard.
+Events: `down`, `up`, `degraded` (slow, and back to normal), `reminder`, `cert`.
+
+`group_interval` (default `10s`, at most `1h`) is the least time between two messages of a notifier: the first alert after a quiet interval goes out at once, and alerts that follow within the interval are sent together as one message. `0s` sends every alert on its own. Webhooks always send one request per event and do not accept the setting. See [notifications.md](notifications.md) for grouping, payloads and retry behavior. Send a test with `pharos notify-test -c pharos.yaml <name>` or from the dashboard.
 
 ## maintenance
 

@@ -4,6 +4,20 @@ All notable changes to Pharos are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pharos uses
 [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Alerts that happen together are sent together.** Slack, Discord, Telegram, ntfy and email notifiers send at most one message per `group_interval` (default 10 s): the first alert after a quiet interval goes out at once, and the alerts that follow are combined into one message ("Monitors: 23 down, 1 recovered") with a line per alert. When 300 of 1,000 monitors failed at once, with a channel enforcing Discord's rate limits, all 300 alerts arrived in two messages; before, 55 arrived within five minutes and the channel refused 1,065 requests. `group_interval: 0s` restores one message per alert; webhooks never group.
+- The dashboard's notifier list shows each notifier's grouping.
+- `tools/loadtest` options: `-tls` for HTTPS targets, `-chat` for a channel with Discord's rate limits, `-group`; the target now runs in its own process so its CPU is not counted as Pharos's.
+
+### Fixed
+- Rate limits are respected: on HTTP 429, a delivery waits as long as the service asks (`Retry-After`, or `retry_after` in Discord's and Telegram's replies) and does not use up a retry. Chat, push and email notifiers send one message at a time, so a limit is met by one refused request: with grouping off, 300 alerts drew 24 refusals in five minutes, where Pharos 0.2.0 drew 1,065.
+- Alerts appear in the delivery log as pending as soon as they are queued, so alerts waiting their turn are visible and marked failed if Pharos stops before sending them.
+- A reader holding a database snapshot, such as a backup tool or a SQLite shell, could hold up every check result and the status page for up to 10 seconds at the hourly checkpoint, and the incomplete checkpoint went unnoticed. Checkpoints no longer wait for readers, the write-ahead log is kept small by `journal_size_limit`, and check results are stored without holding the monitor's state lock.
+- `pharos check` exits with 2 when the configuration file cannot be read (it exited 1, as for a down check) and with 130 when interrupted, without printing checks that were cut short.
+- The dashboard's live refresh: a slow or failed request no longer pauses updates for twenty times its duration. Only successful refreshes set the pace, the pause is at most 30 seconds, a request is abandoned after 20 seconds, and an event that arrives during a refresh is no longer dropped.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
@@ -12,7 +26,7 @@ All notable changes to Pharos are documented here. The format follows
 - CI now runs the container image: demo mode, a real instance on a volume, HTTPS checks inside the image, the health check, and a restart on the same volume.
 
 ### Fixed
-- **Outages of many monitors at once were detected late or not at all.** At most 32 checks ran at the same time, so when many targets stopped answering, their timeouts filled every slot and all other checks waited. With 1,000 monitors of which 300 became unreachable, none was confirmed down within three minutes; now all are, within 70 seconds with the default settings. Each monitor still runs one check at a time, and there is no longer a global limit.
+- **Outages of many monitors at once were detected late or not at all.** At most 32 checks ran at the same time, so when many targets stopped answering, their timeouts filled every slot and all other checks waited. With 1,000 monitors of which 300 became unreachable, none was confirmed down within three minutes; now they are confirmed as quickly as a single outage would be (in that test, all within 70 seconds). Each monitor still runs one check at a time, and there is no longer a global limit.
 - The dashboard's live refresh no longer reloads a monitor's page when other monitors are checked, and slows down on large dashboards so an open tab costs the server at most about 5% of its time.
 - The dashboard of `pharos demo` refused visitors when it ran in Docker, because requests through a published port do not come from loopback. Demo mode, whose data is simulated, now opens the dashboard to every visitor; real instances are unchanged.
 - The start-up jitter that spreads checks after a restart was capped at about 4.3 seconds; it now spans up to 10 seconds, as intended.
@@ -51,5 +65,6 @@ First public release.
 - Configuration validation with line numbers, environment variable expansion and hot reload.
 - A demo mode with 90 days of simulated history.
 
+[Unreleased]: https://github.com/useless-husband/pharos/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/useless-husband/pharos/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/useless-husband/pharos/releases/tag/v0.1.0
