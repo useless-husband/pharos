@@ -18,11 +18,15 @@ func (e *Engine) handle(ctx context.Context, r *runner, cfg *config.Config, c mo
 	var events []model.Event
 	r.mu.Lock()
 	m := r.mon
+	r.mu.Unlock()
 	maint := maintenanceAt(cfg, m.ID, c.At)
 	c.Maintenance = maint != nil
+	// Store the result without holding r.mu: readers of the monitor's
+	// state (the status page, the dashboard) must not wait on the database.
 	if err := e.store.InsertCheck(ctx, c); err != nil {
 		e.log.Error("store check", "monitor", m.ID, "err", err)
 	}
+	r.mu.Lock()
 	r.lastCheck = &c
 	if !c.CertExpiry.IsZero() {
 		r.certExpiry = c.CertExpiry

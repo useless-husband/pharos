@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -883,4 +884,41 @@ func TestUnreachableTargetsDoNotQueueOtherChecks(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+// While the database is slow to accept a check (here: another connection
+// holds the write lock), the monitor's state stays readable.
+func TestSlowDatabaseDoesNotBlockSnapshots(t *testing.T) {
+	h := newHarness(t, baseConfig(httpMon("web")))
+	h.advance(15 * time.Second)
+	other, err := sql.Open("sqlite", "file:"+h.dbPath+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	conn, err := other.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	before := h.probers["web"].count()
+	if err := h.engine.CheckNow("web"); err != nil {
+		t.Fatal(err)
+	}
+	for h.probers["web"].count() == before {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // the check is now waiting for the lock
+	start := time.Now()
+	_ = h.engine.Snapshot()
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Snapshot took %s while a check waited for the database", d)
+	}
+	if _, err := conn.ExecContext(context.Background(), `ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
 }
