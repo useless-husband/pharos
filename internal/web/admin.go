@@ -504,8 +504,8 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, logRow{l, i18n.FormatTime(l.Created, p.Loc), name})
 	}
 	type notifierRow struct {
-		Name, Type, Events string
-		Monitors           int
+		Name, Type, Events, Grouping string
+		Monitors                     int
 	}
 	var ns []notifierRow
 	for _, n := range cfg.Notifiers {
@@ -521,7 +521,11 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		ns = append(ns, notifierRow{n.Name, n.Type, events, count})
+		grouping := p.T("notifiers.no_grouping")
+		if g := n.Grouping(); g > 0 {
+			grouping = p.T("notifiers.grouping", i18n.Duration(p.Lang, g))
+		}
+		ns = append(ns, notifierRow{n.Name, n.Type, events, grouping, count})
 	}
 	s.render(w, r, http.StatusOK, "admin_notifications", struct {
 		page

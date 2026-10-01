@@ -42,10 +42,33 @@ type Dispatcher struct {
 	// being retried is never overtaken by the RECOVERED that follows it.
 	tails   map[string]chan struct{}
 	tailsMu sync.Mutex
-	ctx     context.Context
-	cancel  context.CancelFunc
-	closing bool
+	// groups collect the events of notifiers with a group interval; each
+	// sends at most one message per interval.
+	groups   map[string]*group
+	groupsMu sync.Mutex
+	flush    chan struct{} // closed by Close: send pending groups now
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closing  bool
 }
+
+// queued is an event waiting for delivery, with its delivery log entry
+// (zero if it could not be recorded).
+type queued struct {
+	ev    model.Event
+	logID int64
+}
+
+// group is the pending events of one notifier and when it last sent.
+type group struct {
+	pending  []queued
+	running  bool // a goroutine is sending this group
+	lastSent time.Time
+}
+
+// maxRateLimitWaits bounds how often one delivery waits out a rate limit
+// before it is given up.
+const maxRateLimitWaits = 20
 
 // Options configure a Dispatcher.
 type Options struct {
@@ -73,7 +96,8 @@ func NewDispatcher(cfg *config.Config, opts Options) (*Dispatcher, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{log: opts.Log, logger: opts.Logger, clock: opts.Clock, backoff: opts.Backoff,
-		newSender: opts.NewSender, sem: make(chan struct{}, 8), ctx: ctx, cancel: cancel, tails: map[string]chan struct{}{}}
+		newSender: opts.NewSender, sem: make(chan struct{}, 8), ctx: ctx, cancel: cancel, tails: map[string]chan struct{}{},
+		groups: map[string]*group{}, flush: make(chan struct{})}
 	if err := d.Reload(cfg); err != nil {
 		cancel()
 		return nil, err
@@ -114,7 +138,109 @@ func (d *Dispatcher) Notify(ev model.Event) {
 		if !ok || !n.Wants(string(ev.Kind)) {
 			continue
 		}
-		d.enqueue(ev, n.Name, d.senders[n.Name])
+		// Record the delivery as pending now, so that alerts waiting their
+		// turn show in the delivery log and are accounted for if Pharos stops.
+		q := queued{ev: ev, logID: d.logPending(ev, n.Name)}
+		if n.Type == config.NotifyWebhook {
+			d.enqueue(q, n.Name, d.senders[n.Name])
+		} else {
+			d.addToGroup(q, n.Name)
+		}
+	}
+}
+
+func (d *Dispatcher) logPending(ev model.Event, notifier string) int64 {
+	if d.log == nil {
+		return 0
+	}
+	var incidentID int64
+	if ev.Incident != nil {
+		incidentID = ev.Incident.ID
+	}
+	id, err := d.log.AddNotification(context.Background(), store.NotificationLog{
+		Created: d.clock.Now(), MonitorID: ev.Monitor.ID, IncidentID: incidentID,
+		Event: string(ev.Kind), Notifier: notifier,
+	})
+	if err != nil {
+		d.logger.Error("record notification", "err", err)
+	}
+	return id
+}
+
+// addToGroup queues an event for a chat, push or email notifier. These
+// send one message at a time, so that a rate-limited channel is told to
+// slow down once rather than refusing a crowd of parallel retries. The
+// first event after a quiet group interval is sent at once; events that
+// follow within it wait and go out together (with a zero interval, one by
+// one). Caller holds d.mu (read).
+func (d *Dispatcher) addToGroup(q queued, notifier string) {
+	d.groupsMu.Lock()
+	defer d.groupsMu.Unlock()
+	g := d.groups[notifier]
+	if g == nil {
+		g = &group{}
+		d.groups[notifier] = g
+	}
+	g.pending = append(g.pending, q)
+	if !g.running {
+		g.running = true
+		d.wg.Add(1)
+		go d.sendGroup(notifier, g)
+	}
+}
+
+// sendGroup sends a notifier's pending events, one message per group
+// interval, until none are left. Messages go out one after another, so
+// they arrive in order and a rate-limited channel is never flooded; events
+// that arrive while a message is being retried join the next one, unless
+// grouping is off.
+func (d *Dispatcher) sendGroup(notifier string, g *group) {
+	defer d.wg.Done()
+	for {
+		d.mu.RLock()
+		cfg, s := d.cfg, d.senders[notifier]
+		n, known := cfg.NotifierByName(notifier)
+		d.mu.RUnlock()
+
+		d.groupsMu.Lock()
+		if len(g.pending) == 0 {
+			g.running = false
+			d.groupsMu.Unlock()
+			return
+		}
+		wait := g.lastSent.Add(n.Grouping()).Sub(d.clock.Now())
+		d.groupsMu.Unlock()
+		if wait > 0 {
+			t := d.clock.NewTimer(wait)
+			select {
+			case <-t.C():
+			case <-d.flush:
+				t.Stop()
+			case <-d.ctx.Done():
+				t.Stop()
+			}
+		}
+
+		d.groupsMu.Lock()
+		var batch []queued
+		if n.Grouping() == 0 {
+			batch, g.pending = g.pending[:1:1], g.pending[1:]
+		} else {
+			batch, g.pending = g.pending, nil
+		}
+		g.lastSent = d.clock.Now()
+		d.groupsMu.Unlock()
+		if !known || s == nil {
+			d.logger.Warn("notifier removed; dropping its pending notifications", "notifier", notifier, "events", len(batch))
+			d.record(batch, store.NotifyFailed, 0, "notifier removed from the configuration", time.Time{})
+			continue
+		}
+		evs := make([]model.Event, len(batch))
+		for i, q := range batch {
+			evs[i] = q.ev
+		}
+		msg := RenderGroup(evs, cfg.StatusPage.Language, cfg.StatusPage.Location(), cfg.Server.BaseURL)
+		d.deliver(msg, batch, notifier, s)
 	}
 }
 
@@ -136,14 +262,10 @@ func (d *Dispatcher) Test(ctx context.Context, name string) error {
 }
 
 // enqueue starts a delivery. Caller holds d.mu (read).
-func (d *Dispatcher) enqueue(ev model.Event, notifier string, s Sender) {
+func (d *Dispatcher) enqueue(q queued, notifier string, s Sender) {
 	cfg := d.cfg
-	msg := Render(ev, cfg.StatusPage.Language, cfg.StatusPage.Location(), cfg.Server.BaseURL)
-	var incidentID int64
-	if ev.Incident != nil {
-		incidentID = ev.Incident.ID
-	}
-	key := ev.Monitor.ID + "\x00" + notifier
+	msg := Render(q.ev, cfg.StatusPage.Language, cfg.StatusPage.Location(), cfg.Server.BaseURL)
+	key := q.ev.Monitor.ID + "\x00" + notifier
 	done := make(chan struct{})
 	d.tailsMu.Lock()
 	prev := d.tails[key]
@@ -166,39 +288,43 @@ func (d *Dispatcher) enqueue(ev model.Event, notifier string, s Sender) {
 			case <-d.ctx.Done():
 			}
 		}
-		d.deliver(msg, notifier, s, incidentID)
+		d.deliver(msg, []queued{q}, notifier, s)
 	}()
 }
 
-func (d *Dispatcher) deliver(msg Message, notifier string, s Sender, incidentID int64) {
-	ctx := d.ctx
-	var id int64
-	if d.log != nil {
-		var err error
-		id, err = d.log.AddNotification(context.Background(), store.NotificationLog{
-			Created: d.clock.Now(), MonitorID: msg.Event.Monitor.ID, IncidentID: incidentID,
-			Event: string(msg.Event.Kind), Notifier: notifier,
-		})
-		if err != nil {
+// record updates the delivery log entries of items.
+func (d *Dispatcher) record(items []queued, state string, attempts int, lastErr string, delivered time.Time) {
+	if d.log == nil {
+		return
+	}
+	for _, q := range items {
+		if q.logID == 0 {
+			continue
+		}
+		if err := d.log.UpdateNotification(context.Background(), q.logID, state, attempts, lastErr, delivered); err != nil {
 			d.logger.Error("record notification", "err", err)
 		}
 	}
+}
+
+// deliver sends msg, which reports the events of items, with retries, and
+// keeps their delivery log entries up to date.
+func (d *Dispatcher) deliver(msg Message, items []queued, notifier string, s Sender) {
+	ctx := d.ctx
 	record := func(state string, attempts int, lastErr string, delivered time.Time) {
-		if d.log != nil && id != 0 {
-			if err := d.log.UpdateNotification(context.Background(), id, state, attempts, lastErr, delivered); err != nil {
-				d.logger.Error("record notification", "err", err)
-			}
-		}
+		d.record(items, state, attempts, lastErr, delivered)
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= len(d.backoff); attempt++ {
-		if attempt > 0 {
-			t := d.clock.NewTimer(d.backoff[attempt-1])
+	var wait time.Duration
+	attempts, failures, limited := 0, 0, 0
+	for {
+		if wait > 0 {
+			t := d.clock.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				t.Stop()
-				record(store.NotifyFailed, attempt, "interrupted by shutdown: "+errString(lastErr), time.Time{})
+				record(store.NotifyFailed, attempts, "interrupted by shutdown: "+errString(lastErr), time.Time{})
 				return
 			case <-t.C():
 			}
@@ -206,28 +332,47 @@ func (d *Dispatcher) deliver(msg Message, notifier string, s Sender, incidentID 
 		select {
 		case d.sem <- struct{}{}:
 		case <-ctx.Done():
-			record(store.NotifyFailed, attempt, "interrupted by shutdown", time.Time{})
+			record(store.NotifyFailed, attempts, "interrupted by shutdown", time.Time{})
 			return
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		lastErr = s.Send(sendCtx, msg)
 		cancel()
 		<-d.sem
+		attempts++
 		if lastErr == nil {
-			record(store.NotifyDelivered, attempt+1, "", d.clock.Now())
-			d.logger.Info("notification delivered", "notifier", notifier, "event", msg.Event.Kind, "monitor", msg.Event.Monitor.ID)
+			record(store.NotifyDelivered, attempts, "", d.clock.Now())
+			d.logger.Info("notification delivered", "notifier", notifier, "event", msg.Event.Kind, "monitor", msg.Event.Monitor.ID, "events", len(items))
 			return
 		}
 		var perm *PermanentError
-		permanent := errors.As(lastErr, &perm)
-		d.logger.Warn("notification failed", "notifier", notifier, "event", msg.Event.Kind, "attempt", attempt+1, "permanent", permanent, "err", lastErr)
-		if permanent {
-			record(store.NotifyFailed, attempt+1, lastErr.Error(), time.Time{})
+		var limit *RateLimitError
+		switch {
+		case errors.As(lastErr, &limit) && limited < maxRateLimitWaits:
+			// Being told to slow down is not a failure of the message:
+			// wait as long as asked, without using up a retry.
+			limited++
+			wait = limit.After
+			if wait <= 0 {
+				wait = DefaultBackoff[0]
+			}
+			d.logger.Warn("notification rate limited", "notifier", notifier, "retry_in", wait)
+			record(store.NotifyPending, attempts, lastErr.Error(), time.Time{})
+			continue
+		case errors.As(lastErr, &perm):
+			d.logger.Warn("notification failed", "notifier", notifier, "event", msg.Event.Kind, "attempt", attempts, "permanent", true, "err", lastErr)
+			record(store.NotifyFailed, attempts, lastErr.Error(), time.Time{})
+			return
+		case failures == len(d.backoff):
+			d.logger.Warn("notification failed", "notifier", notifier, "event", msg.Event.Kind, "attempt", attempts, "err", lastErr)
+			record(store.NotifyFailed, attempts, lastErr.Error(), time.Time{})
 			return
 		}
-		record(store.NotifyPending, attempt+1, lastErr.Error(), time.Time{})
+		d.logger.Warn("notification failed", "notifier", notifier, "event", msg.Event.Kind, "attempt", attempts, "permanent", false, "err", lastErr)
+		record(store.NotifyPending, attempts, lastErr.Error(), time.Time{})
+		wait = d.backoff[failures]
+		failures++
 	}
-	record(store.NotifyFailed, len(d.backoff)+1, errString(lastErr), time.Time{})
 }
 
 func errString(err error) string {
@@ -241,7 +386,10 @@ func errString(err error) string {
 // ends; deliveries still waiting to retry are then abandoned.
 func (d *Dispatcher) Close(ctx context.Context) {
 	d.mu.Lock()
-	d.closing = true
+	if !d.closing {
+		d.closing = true
+		close(d.flush) // pending groups go out now, not after their interval
+	}
 	d.mu.Unlock()
 	done := make(chan struct{})
 	go func() {

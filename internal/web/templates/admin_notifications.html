@@ -10,13 +10,14 @@
     {{if .Notifiers}}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>{{.T "col.name"}}</th><th>{{.T "col.type"}}</th><th class="hide-sm">{{.T "col.events"}}</th><th class="num">{{.T "col.used_by"}}</th><th></th></tr></thead>
+        <thead><tr><th>{{.T "col.name"}}</th><th>{{.T "col.type"}}</th><th class="hide-sm">{{.T "col.events"}}</th><th class="hide-sm">{{.T "col.grouping"}}</th><th class="num">{{.T "col.used_by"}}</th><th></th></tr></thead>
         <tbody>
         {{range .Notifiers}}
           <tr>
             <td class="name-cell"><strong>{{.Name}}</strong></td>
             <td>{{.Type}}</td>
             <td class="hide-sm">{{.Events}}</td>
+            <td class="hide-sm">{{.Grouping}}</td>
             <td class="num">{{$.T "notifiers.monitors" .Monitors}}</td>
             <td class="num"><form method="post" action="/admin/notifiers/{{.Name}}/test" class="inline-form"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn" type="submit">{{$.T "notifiers.test"}}</button></form></td>
           </tr>

@@ -112,9 +112,13 @@ func buildMail(from string, to []string, m Message) []byte {
 	hdr("MIME-Version", "1.0")
 	hdr("Content-Type", "text/plain; charset=utf-8")
 	hdr("Content-Transfer-Encoding", "quoted-printable")
-	hdr("X-Pharos-Event", string(m.Event.Kind))
-	if m.Event.Monitor.ID != "" {
-		hdr("X-Pharos-Monitor", m.Event.Monitor.ID)
+	if m.Count > 1 {
+		hdr("X-Pharos-Event", "group")
+	} else {
+		hdr("X-Pharos-Event", string(m.Event.Kind))
+		if m.Event.Monitor.ID != "" {
+			hdr("X-Pharos-Monitor", m.Event.Monitor.ID)
+		}
 	}
 	b.WriteString("\r\n")
 	body := m.Body
